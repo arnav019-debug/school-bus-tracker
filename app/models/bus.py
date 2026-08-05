@@ -19,3 +19,4 @@ class Bus(Base):
 
     driver = relationship("Driver", back_populates="buses")
     routes = relationship("Route", back_populates="bus")
+    gps_logs = relationship("GpsLog", back_populates="bus")

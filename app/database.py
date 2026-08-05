@@ -30,6 +30,11 @@ AsyncSessionLocal = async_sessionmaker(
 class Base(DeclarativeBase):
     pass
 
+
+# Import models before create_all so optional tables, including gps_logs, are
+# registered with SQLAlchemy metadata at application startup.
+from app.models.gps_log import GpsLog  # noqa: E402, F401
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency that yields an async database session.

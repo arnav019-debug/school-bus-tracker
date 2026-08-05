@@ -23,3 +23,4 @@ class Route(Base):
     bus = relationship("Bus", back_populates="routes")
     driver = relationship("Driver", back_populates="routes")
     students = relationship("Student", back_populates="route")
+    gps_logs = relationship("GpsLog", back_populates="route")

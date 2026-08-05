@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,8 +6,11 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.models.bus import Bus
+from app.models.gps_log import GpsLog
 from app.models.profile import Profile
+from app.models.route import Route
 from app.schemas.bus import BusCreate, BusUpdate, BusResponse
+from app.schemas.gps import GpsLogCreate, GpsLogResponse
 from app.api.deps import get_current_user
 
 router = APIRouter()
@@ -104,6 +108,59 @@ async def update_bus(
     await db.commit()
     await db.refresh(bus)
     return bus
+
+
+@router.post("/{bus_id}/gps", response_model=GpsLogResponse)
+async def create_bus_gps(
+    bus_id: str,
+    gps_in: GpsLogCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Profile = Depends(get_current_user),
+):
+    """Store one foreground GPS update from the driver app.
+
+    A future hardware tracker should use a device-specific credential instead
+    of a driver's bearer token.
+    """
+    result = await db.execute(select(Bus).where(Bus.id == bus_id))
+    bus = result.scalars().first()
+    if not bus:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bus not found")
+
+    if gps_in.route_id is not None:
+        route_result = await db.execute(select(Route).where(Route.id == gps_in.route_id))
+        if route_result.scalars().first() is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route not found")
+
+    gps_log = GpsLog(
+        bus_id=bus.id,
+        route_id=gps_in.route_id,
+        latitude=gps_in.latitude,
+        longitude=gps_in.longitude,
+        speed=gps_in.speed,
+        heading=gps_in.heading,
+        timestamp=gps_in.timestamp or datetime.now(timezone.utc),
+    )
+    db.add(gps_log)
+    await db.commit()
+    await db.refresh(gps_log)
+    return gps_log
+
+
+@router.get("/{bus_id}/gps/latest", response_model=GpsLogResponse)
+async def get_latest_bus_gps(
+    bus_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Profile = Depends(get_current_user),
+):
+    """Return the latest GPS update for a bus."""
+    result = await db.execute(
+        select(GpsLog).where(GpsLog.bus_id == bus_id).order_by(GpsLog.timestamp.desc()).limit(1)
+    )
+    gps_log = result.scalars().first()
+    if not gps_log:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No GPS data found for this bus")
+    return gps_log
 
 @router.delete("/{bus_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_bus(
