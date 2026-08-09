@@ -3,10 +3,10 @@ from httpx import AsyncClient
 
 async def get_auth_header(async_client: AsyncClient) -> dict:
     register_payload = {
-        "email": "staff@example.com",
+        "email": "teacher@example.com",
         "password": "SecretPassword123!",
-        "full_name": "Staff Member",
-        "role": "staff"
+        "full_name": "Teacher Member",
+        "role": "teacher"
     }
     resp = await async_client.post("/api/v1/auth/register", json=register_payload)
     token = resp.json()["access_token"]

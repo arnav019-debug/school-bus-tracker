@@ -30,6 +30,8 @@ AsyncSessionLocal = async_sessionmaker(
 class Base(DeclarativeBase):
     pass
 
+from app.models.gps_log import GpsLog
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency that yields an async database session.

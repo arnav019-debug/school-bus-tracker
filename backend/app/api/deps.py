@@ -63,9 +63,9 @@ async def get_current_admin(
     current_user: Profile = Depends(get_current_user)
 ) -> Profile:
     """
-    Dependency requiring admin or staff role.
+    Dependency requiring admin role.
     """
-    if current_user.role not in ["admin", "staff"]:
+    if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"

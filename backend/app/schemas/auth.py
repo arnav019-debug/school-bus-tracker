@@ -7,7 +7,7 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    role: Optional[str] = "parent"  # admin, staff, parent, driver
+    role: Optional[str] = None
     phone: Optional[str] = None
 
 class UserLogin(BaseModel):

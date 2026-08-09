@@ -42,13 +42,15 @@ async def register(
 
     user_id: str | None = None
 
+    registration_role = "parent"
+
     if requires_supabase_auth() or uses_supabase_auth():
         try:
             user_id = create_supabase_auth_user(
                 user_in.email,
                 user_in.password,
                 full_name=user_in.full_name,
-                role=user_in.role or "parent",
+                role=registration_role,
                 phone=user_in.phone,
             )
         except AuthApiError as e:
@@ -75,7 +77,7 @@ async def register(
             id=uuid.UUID(user_id),
             email=user_in.email,
             full_name=user_in.full_name,
-            role=user_in.role or "parent",
+            role=registration_role,
             phone=user_in.phone,
         )
         db.add(profile)

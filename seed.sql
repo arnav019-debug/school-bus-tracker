@@ -2,7 +2,7 @@
 -- School Bus Tracking System - Sample Seed Data
 -- ==========================================
 
--- 1. Insert Sample Admin/Staff & Parent Profiles (assuming auth user IDs or mock profiles)
+-- 1. Insert Sample Admin/Teacher & Parent Profiles (assuming auth user IDs or mock profiles)
 -- Note: Replace these UUIDs with actual auth.users IDs after signing up in Supabase Auth if needed.
 
 -- Sample Buses
