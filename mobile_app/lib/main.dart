@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -194,7 +193,6 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   bool _isLoading = true;
-  String? _errorMessage;
 
   @override
   void initState() {
@@ -278,8 +276,9 @@ class RoleBasedHomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     switch (role.toLowerCase()) {
       case 'admin':
+        return AdminHomeScreen(accessToken: accessToken);
       case 'teacher':
-        return BusListScreen(accessToken: accessToken);
+        return TeacherHomeScreen(accessToken: accessToken);
       case 'driver':
         return DriverModeScreen(
           accessToken: accessToken,
@@ -292,8 +291,318 @@ class RoleBasedHomeScreen extends StatelessWidget {
   }
 }
 
-class ParentHomeScreen extends StatelessWidget {
+Widget _detailRow(String label, String value) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Row(
+      children: [
+        SizedBox(
+          width: 110,
+          child: Text(
+            '$label:',
+            style: const TextStyle(
+              color: Colors.black54,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Expanded(child: Text(value)),
+      ],
+    ),
+  );
+}
+
+class ParentHomeScreen extends StatefulWidget {
   const ParentHomeScreen({
+    super.key,
+    required this.accessToken,
+  });
+
+  final String accessToken;
+
+  @override
+  State<ParentHomeScreen> createState() => _ParentHomeScreenState();
+}
+
+class _ParentHomeScreenState extends State<ParentHomeScreen> {
+  bool _isLoading = true;
+  String? _errorMessage;
+  Map<String, dynamic>? _selectedChild;
+  Map<String, dynamic>? _bus;
+  Map<String, dynamic>? _driver;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadParentData();
+  }
+
+  Future<void> _loadParentData() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final response = await http.get(
+        AppConfig.studentsUri,
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final body = response.body.isNotEmpty
+            ? jsonDecode(response.body)
+            : <String, dynamic>{};
+        setState(() {
+          _errorMessage = (body['detail'] ?? 'Unable to load your child profile.').toString();
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final payload = jsonDecode(response.body) as List<dynamic>;
+      final children = payload
+          .map((item) => item as Map<String, dynamic>)
+          .toList(growable: false);
+
+      final selectedChild = children.isNotEmpty ? children.first : null;
+      Map<String, dynamic>? route;
+      Map<String, dynamic>? bus;
+      Map<String, dynamic>? driver;
+
+      if (selectedChild != null && selectedChild['route_id'] != null) {
+        final routeResponse = await http.get(
+          AppConfig.routeById(selectedChild['route_id'].toString()),
+          headers: {
+            'Accept': 'application/json',
+            'Authorization': 'Bearer ${widget.accessToken}',
+          },
+        );
+
+        if (routeResponse.statusCode >= 200 && routeResponse.statusCode < 300) {
+          route = jsonDecode(routeResponse.body) as Map<String, dynamic>;
+        }
+      }
+
+      if (route != null && route['bus_id'] != null) {
+        final busResponse = await http.get(
+          Uri.parse('${AppConfig.apiBaseUrl}/api/v1/buses/${route['bus_id']}'),
+          headers: {
+            'Accept': 'application/json',
+            'Authorization': 'Bearer ${widget.accessToken}',
+          },
+        );
+        if (busResponse.statusCode >= 200 && busResponse.statusCode < 300) {
+          bus = jsonDecode(busResponse.body) as Map<String, dynamic>;
+        }
+      }
+
+      if (bus != null && bus['driver_id'] != null) {
+        final driverResponse = await http.get(
+          AppConfig.driverById(bus['driver_id'].toString()),
+          headers: {
+            'Accept': 'application/json',
+            'Authorization': 'Bearer ${widget.accessToken}',
+          },
+        );
+        if (driverResponse.statusCode >= 200 && driverResponse.statusCode < 300) {
+          driver = jsonDecode(driverResponse.body) as Map<String, dynamic>;
+        }
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        _selectedChild = selectedChild;
+        _bus = bus;
+        _driver = driver;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _showBusMap() async {
+    if (_bus == null) {
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => BusMapScreen(
+          accessToken: widget.accessToken,
+          busId: _bus!['id'].toString(),
+          busNumber: _bus!['bus_number'].toString(),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Parent Dashboard'),
+        actions: [
+          IconButton(
+            onPressed: () => _signOut(context),
+            icon: const Icon(Icons.logout_rounded),
+            tooltip: 'Sign out',
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Padding(
+                padding: const EdgeInsets.all(16),
+                child: _errorMessage != null
+                    ? _buildErrorState()
+                    : _buildParentContent(),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline_rounded, size: 52, color: Colors.red),
+          const SizedBox(height: 16),
+          Text(
+            _errorMessage!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 16),
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: _loadParentData,
+            child: const Text('Retry'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildParentContent() {
+    if (_selectedChild == null) {
+      return _buildEmptyState(
+        title: 'No child assigned yet',
+        message: 'Your parent account does not have any assigned students yet. Please contact your administrator.',
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(0),
+      children: [
+        _buildSectionTitle('Your child'),
+        Card(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${_selectedChild!['first_name']} ${_selectedChild!['last_name']}',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 8),
+                _detailRow('Grade', _selectedChild!['grade']?.toString() ?? 'N/A'),
+                _detailRow('Pickup', _selectedChild!['pickup_stop']?.toString() ?? 'Not set'),
+                _detailRow('Dropoff', _selectedChild!['dropoff_stop']?.toString() ?? 'Not set'),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildSectionTitle('Bus assignment'),
+        if (_bus == null)
+          _buildEmptyState(
+            title: 'Bus not assigned yet',
+            message: 'Your child is not assigned to a bus yet. The bus status and map will appear once the admin creates the route.',
+          )
+        else ...[
+          Card(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _bus!['bus_number']?.toString() ?? 'Unknown bus',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  _detailRow('License plate', _bus!['license_plate']?.toString() ?? 'N/A'),
+                  _detailRow('Status', _bus!['status']?.toString() ?? 'active'),
+                  const Divider(height: 28),
+                  _detailRow('Driver', _driver != null ? _driver!['license_number']?.toString() ?? 'Assigned' : 'Unassigned'),
+                  _detailRow('Phone', _driver != null ? _driver!['phone']?.toString() ?? 'N/A' : 'N/A'),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _showBusMap,
+                      icon: const Icon(Icons.map_outlined),
+                      label: const Text('View bus location'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Text(
+        title,
+        style: Theme.of(context).textTheme.titleLarge,
+      ),
+    );
+  }
+
+  Widget _buildEmptyState({required String title, required String message}) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Card(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              Text(message),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class AdminHomeScreen extends StatelessWidget {
+  const AdminHomeScreen({
     super.key,
     required this.accessToken,
   });
@@ -304,7 +613,7 @@ class ParentHomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Parent Portal'),
+        title: const Text('Admin Dashboard'),
         actions: [
           IconButton(
             onPressed: () => _signOut(context),
@@ -313,24 +622,1283 @@ class ParentHomeScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: Center(
+      body: SafeArea(
         child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: ListView(
+            children: [
+              const Text('Manage school operations', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+              _actionCard(
+                context,
+                icon: Icons.school_rounded,
+                title: 'Manage students',
+                description: 'Create students, assign a parent, and assign a bus route.',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => StudentListScreen(accessToken: accessToken),
+                  ),
+                ),
+              ),
+              _actionCard(
+                context,
+                icon: Icons.app_registration_rounded,
+                title: 'Manage routes',
+                description: 'Assign teachers and buses to routes.',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => RouteListScreen(accessToken: accessToken),
+                  ),
+                ),
+              ),
+              _actionCard(
+                context,
+                icon: Icons.drive_eta_rounded,
+                title: 'Manage drivers',
+                description: 'Update driver phone numbers and license information.',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => DriverListScreen(accessToken: accessToken),
+                  ),
+                ),
+              ),
+              _actionCard(
+                context,
+                icon: Icons.directions_bus_rounded,
+                title: 'View buses',
+                description: 'Review buses and get access to the bus list screen.',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => BusListScreen(accessToken: accessToken),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _actionCard(BuildContext context, {required IconData icon, required String title, required String description, required VoidCallback onTap}) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Row(
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withValues(alpha: 31),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                width: 48,
+                height: 48,
+                child: Icon(icon, color: const Color(0xFFF59E0B)),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Text(description),
+                  ],
+                ),
+              ),
+              const Icon(Icons.arrow_forward_ios_rounded, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class StudentListScreen extends StatefulWidget {
+  const StudentListScreen({super.key, required this.accessToken});
+
+  final String accessToken;
+
+  @override
+  State<StudentListScreen> createState() => _StudentListScreenState();
+}
+
+class _StudentListScreenState extends State<StudentListScreen> {
+  bool _isLoading = true;
+  String? _errorMessage;
+  List<Map<String, dynamic>> _students = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStudents();
+  }
+
+  Future<void> _loadStudents() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final response = await http.get(
+        AppConfig.studentsUri,
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+      );
+      if (!mounted) return;
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final body = jsonDecode(response.body) as List<dynamic>;
+        setState(() {
+          _students = body.map((e) => e as Map<String, dynamic>).toList();
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : <String, dynamic>{};
+      setState(() {
+        _errorMessage = (body['detail'] ?? 'Unable to load students.').toString();
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _editStudent(Map<String, dynamic>? student) async {
+    final updated = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => StudentEditScreen(
+          accessToken: widget.accessToken,
+          student: student,
+        ),
+      ),
+    );
+    if (updated == true && mounted) {
+      _loadStudents();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Students')),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _editStudent(null),
+        tooltip: 'Add student',
+        child: const Icon(Icons.add_rounded),
+      ),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : _errorMessage != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.error_outline_rounded, size: 48),
+                          const SizedBox(height: 16),
+                          Text(_errorMessage!, textAlign: TextAlign.center),
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            onPressed: _loadStudents,
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : _students.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              Icon(Icons.person_off_rounded, size: 48),
+                              SizedBox(height: 16),
+                              Text('No students found.'),
+                            ],
+                          ),
+                        ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _students.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 12),
+                        itemBuilder: (context, index) {
+                          final student = _students[index];
+                          return Card(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                            child: ListTile(
+                              title: Text('${student['first_name']} ${student['last_name']}'),
+                              subtitle: Text('Grade ${student['grade'] ?? 'N/A'}'),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.edit_rounded),
+                                onPressed: () => _editStudent(student),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+      ),
+    );
+  }
+}
+
+class StudentEditScreen extends StatefulWidget {
+  const StudentEditScreen({
+    super.key,
+    required this.accessToken,
+    this.student,
+  });
+
+  final String accessToken;
+  final Map<String, dynamic>? student;
+
+  @override
+  State<StudentEditScreen> createState() => _StudentEditScreenState();
+}
+
+class _StudentEditScreenState extends State<StudentEditScreen> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _firstNameController;
+  late final TextEditingController _lastNameController;
+  late final TextEditingController _gradeController;
+  late final TextEditingController _parentIdController;
+  late final TextEditingController _routeIdController;
+  late final TextEditingController _pickupStopController;
+  late final TextEditingController _dropoffStopController;
+  bool _isSaving = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _firstNameController = TextEditingController(text: widget.student?['first_name']?.toString() ?? '');
+    _lastNameController = TextEditingController(text: widget.student?['last_name']?.toString() ?? '');
+    _gradeController = TextEditingController(text: widget.student?['grade']?.toString() ?? '');
+    _parentIdController = TextEditingController(text: widget.student?['parent_id']?.toString() ?? '');
+    _routeIdController = TextEditingController(text: widget.student?['route_id']?.toString() ?? '');
+    _pickupStopController = TextEditingController(text: widget.student?['pickup_stop']?.toString() ?? '');
+    _dropoffStopController = TextEditingController(text: widget.student?['dropoff_stop']?.toString() ?? '');
+  }
+
+  Future<void> _saveStudent() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+
+    final studentData = {
+      'first_name': _firstNameController.text.trim(),
+      'last_name': _lastNameController.text.trim(),
+      'grade': _gradeController.text.trim(),
+      'parent_id': _parentIdController.text.trim().isEmpty ? null : _parentIdController.text.trim(),
+      'route_id': _routeIdController.text.trim().isEmpty ? null : _routeIdController.text.trim(),
+      'pickup_stop': _pickupStopController.text.trim().isEmpty ? null : _pickupStopController.text.trim(),
+      'dropoff_stop': _dropoffStopController.text.trim().isEmpty ? null : _dropoffStopController.text.trim(),
+    };
+
+    try {
+      final uri = widget.student == null
+          ? AppConfig.studentsUri
+          : Uri.parse('${AppConfig.apiBaseUrl}/api/v1/students/${widget.student!['id']}');
+      final method = widget.student == null ? 'POST' : 'PUT';
+      final request = http.Request(method, uri)
+        ..headers.addAll({
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        })
+        ..body = jsonEncode(studentData);
+
+      final response = await http.Client().send(request);
+      final responseBody = await response.stream.bytesToString();
+      if (!mounted) return;
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        Navigator.of(context).pop(true);
+        return;
+      }
+
+      final body = responseBody.isNotEmpty ? jsonDecode(responseBody) : <String, dynamic>{};
+      setState(() {
+        _errorMessage = (body['detail'] ?? 'Unable to save student.').toString();
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = widget.student == null ? 'Add student' : 'Edit student';
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: SafeArea(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextFormField(
+                  controller: _firstNameController,
+                  decoration: const InputDecoration(labelText: 'First name', border: OutlineInputBorder()),
+                  validator: (value) => value == null || value.trim().isEmpty ? 'First name is required' : null,
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _lastNameController,
+                  decoration: const InputDecoration(labelText: 'Last name', border: OutlineInputBorder()),
+                  validator: (value) => value == null || value.trim().isEmpty ? 'Last name is required' : null,
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _gradeController,
+                  decoration: const InputDecoration(labelText: 'Grade', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _parentIdController,
+                  decoration: const InputDecoration(labelText: 'Parent ID', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _routeIdController,
+                  decoration: const InputDecoration(labelText: 'Route/Bus ID', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _pickupStopController,
+                  decoration: const InputDecoration(labelText: 'Pickup stop', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _dropoffStopController,
+                  decoration: const InputDecoration(labelText: 'Dropoff stop', border: OutlineInputBorder()),
+                ),
+                if (_errorMessage != null) ...[
+                  const SizedBox(height: 16),
+                  Text(_errorMessage!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                ],
+                const SizedBox(height: 24),
+                SizedBox(
+                  height: 52,
+                  child: FilledButton.icon(
+                    onPressed: _isSaving ? null : _saveStudent,
+                    icon: _isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.save_rounded),
+                    label: Text(_isSaving ? 'Saving...' : 'Save student'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    _gradeController.dispose();
+    _parentIdController.dispose();
+    _routeIdController.dispose();
+    _pickupStopController.dispose();
+    _dropoffStopController.dispose();
+    super.dispose();
+  }
+}
+
+class RouteListScreen extends StatefulWidget {
+  const RouteListScreen({super.key, required this.accessToken});
+
+  final String accessToken;
+
+  @override
+  State<RouteListScreen> createState() => _RouteListScreenState();
+}
+
+class _RouteListScreenState extends State<RouteListScreen> {
+  bool _isLoading = true;
+  String? _errorMessage;
+  List<Map<String, dynamic>> _routes = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRoutes();
+  }
+
+  Future<void> _loadRoutes() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final response = await http.get(
+        AppConfig.routesUri,
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+      );
+      if (!mounted) return;
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final body = jsonDecode(response.body) as List<dynamic>;
+        setState(() {
+          _routes = body.map((e) => e as Map<String, dynamic>).toList();
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : <String, dynamic>{};
+      setState(() {
+        _errorMessage = (body['detail'] ?? 'Unable to load routes.').toString();
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _editRoute(Map<String, dynamic> route) async {
+    final updated = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => RouteEditScreen(accessToken: widget.accessToken, route: route),
+      ),
+    );
+    if (updated == true && mounted) {
+      _loadRoutes();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Routes')),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : _errorMessage != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.error_outline_rounded, size: 48),
+                          const SizedBox(height: 16),
+                          Text(_errorMessage!, textAlign: TextAlign.center),
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            onPressed: _loadRoutes,
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : _routes.isEmpty
+                    ? const Center(child: Text('No routes available.'))
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _routes.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 12),
+                        itemBuilder: (context, index) {
+                          final route = _routes[index];
+                          return Card(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                            child: ListTile(
+                              title: Text(route['name']?.toString() ?? 'Route'),
+                              subtitle: Text('Bus: ${route['bus_id'] ?? 'Unassigned'}\nTeacher: ${route['teacher_id'] ?? 'Unassigned'}'),
+                              isThreeLine: true,
+                              trailing: IconButton(
+                                icon: const Icon(Icons.edit_rounded),
+                                onPressed: () => _editRoute(route),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+      ),
+    );
+  }
+}
+
+class RouteEditScreen extends StatefulWidget {
+  const RouteEditScreen({
+    super.key,
+    required this.accessToken,
+    required this.route,
+  });
+
+  final String accessToken;
+  final Map<String, dynamic> route;
+
+  @override
+  State<RouteEditScreen> createState() => _RouteEditScreenState();
+}
+
+class _RouteEditScreenState extends State<RouteEditScreen> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _busIdController;
+  late final TextEditingController _teacherIdController;
+  late final TextEditingController _driverIdController;
+  bool _isSaving = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _busIdController = TextEditingController(text: widget.route['bus_id']?.toString() ?? '');
+    _teacherIdController = TextEditingController(text: widget.route['teacher_id']?.toString() ?? '');
+    _driverIdController = TextEditingController(text: widget.route['driver_id']?.toString() ?? '');
+  }
+
+  Future<void> _saveRoute() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    final data = {
+      'bus_id': _busIdController.text.trim().isEmpty ? null : _busIdController.text.trim(),
+      'teacher_id': _teacherIdController.text.trim().isEmpty ? null : _teacherIdController.text.trim(),
+      'driver_id': _driverIdController.text.trim().isEmpty ? null : _driverIdController.text.trim(),
+    };
+    try {
+      final response = await http.put(
+        AppConfig.routeById(widget.route['id'].toString()),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+        body: jsonEncode(data),
+      );
+      if (!mounted) return;
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        Navigator.of(context).pop(true);
+        return;
+      }
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : <String, dynamic>{};
+      setState(() {
+        _errorMessage = (body['detail'] ?? 'Unable to save route.').toString();
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Assign route')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextFormField(
+                  controller: _busIdController,
+                  decoration: const InputDecoration(labelText: 'Bus ID', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _teacherIdController,
+                  decoration: const InputDecoration(labelText: 'Teacher ID', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _driverIdController,
+                  decoration: const InputDecoration(labelText: 'Driver ID', border: OutlineInputBorder()),
+                ),
+                if (_errorMessage != null) ...[
+                  const SizedBox(height: 16),
+                  Text(_errorMessage!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                ],
+                const SizedBox(height: 24),
+                SizedBox(
+                  height: 52,
+                  child: FilledButton.icon(
+                    onPressed: _isSaving ? null : _saveRoute,
+                    icon: _isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.save_rounded),
+                    label: Text(_isSaving ? 'Saving...' : 'Save assignment'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _busIdController.dispose();
+    _teacherIdController.dispose();
+    _driverIdController.dispose();
+    super.dispose();
+  }
+}
+
+class DriverListScreen extends StatefulWidget {
+  const DriverListScreen({super.key, required this.accessToken});
+
+  final String accessToken;
+
+  @override
+  State<DriverListScreen> createState() => _DriverListScreenState();
+}
+
+class _DriverListScreenState extends State<DriverListScreen> {
+  bool _isLoading = true;
+  String? _errorMessage;
+  List<Map<String, dynamic>> _drivers = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDrivers();
+  }
+
+  Future<void> _loadDrivers() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final response = await http.get(
+        AppConfig.driversUri,
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+      );
+      if (!mounted) return;
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final body = jsonDecode(response.body) as List<dynamic>;
+        setState(() {
+          _drivers = body.map((e) => e as Map<String, dynamic>).toList();
+          _isLoading = false;
+        });
+        return;
+      }
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : <String, dynamic>{};
+      setState(() {
+        _errorMessage = (body['detail'] ?? 'Unable to load drivers.').toString();
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _editDriver(Map<String, dynamic> driver) async {
+    final updated = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => DriverEditScreen(accessToken: widget.accessToken, driver: driver),
+      ),
+    );
+    if (updated == true && mounted) {
+      _loadDrivers();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Drivers')),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : _errorMessage != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.error_outline_rounded, size: 48),
+                          const SizedBox(height: 16),
+                          Text(_errorMessage!, textAlign: TextAlign.center),
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            onPressed: _loadDrivers,
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : _drivers.isEmpty
+                    ? const Center(child: Text('No drivers found.'))
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _drivers.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 12),
+                        itemBuilder: (context, index) {
+                          final driver = _drivers[index];
+                          return Card(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                            child: ListTile(
+                              title: Text(driver['license_number']?.toString() ?? 'Driver'),
+                              subtitle: Text('Phone: ${driver['phone'] ?? 'N/A'}'),
+                              trailing: IconButton(
+                                icon: const Icon(Icons.edit_rounded),
+                                onPressed: () => _editDriver(driver),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+      ),
+    );
+  }
+}
+
+class DriverEditScreen extends StatefulWidget {
+  const DriverEditScreen({
+    super.key,
+    required this.accessToken,
+    required this.driver,
+  });
+
+  final String accessToken;
+  final Map<String, dynamic> driver;
+
+  @override
+  State<DriverEditScreen> createState() => _DriverEditScreenState();
+}
+
+class _DriverEditScreenState extends State<DriverEditScreen> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _licenseController;
+  late final TextEditingController _phoneController;
+  bool _isSaving = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _licenseController = TextEditingController(text: widget.driver['license_number']?.toString() ?? '');
+    _phoneController = TextEditingController(text: widget.driver['phone']?.toString() ?? '');
+  }
+
+  Future<void> _saveDriver() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final response = await http.put(
+        AppConfig.driverById(widget.driver['id'].toString()),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+        body: jsonEncode({
+          'license_number': _licenseController.text.trim(),
+          'phone': _phoneController.text.trim(),
+        }),
+      );
+      if (!mounted) return;
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        Navigator.of(context).pop(true);
+        return;
+      }
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : <String, dynamic>{};
+      setState(() {
+        _errorMessage = (body['detail'] ?? 'Unable to save driver.').toString();
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Edit driver')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextFormField(
+                  controller: _licenseController,
+                  decoration: const InputDecoration(labelText: 'License number', border: OutlineInputBorder()),
+                  validator: (value) => value == null || value.trim().isEmpty ? 'License number is required' : null,
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _phoneController,
+                  decoration: const InputDecoration(labelText: 'Phone', border: OutlineInputBorder()),
+                  validator: (value) => value == null || value.trim().isEmpty ? 'Phone is required' : null,
+                ),
+                if (_errorMessage != null) ...[
+                  const SizedBox(height: 16),
+                  Text(_errorMessage!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                ],
+                const SizedBox(height: 24),
+                SizedBox(
+                  height: 52,
+                  child: FilledButton.icon(
+                    onPressed: _isSaving ? null : _saveDriver,
+                    icon: _isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.save_rounded),
+                    label: Text(_isSaving ? 'Saving...' : 'Save driver'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _licenseController.dispose();
+    _phoneController.dispose();
+    super.dispose();
+  }
+}
+
+class TeacherHomeScreen extends StatefulWidget {
+  const TeacherHomeScreen({super.key, required this.accessToken});
+
+  final String accessToken;
+
+  @override
+  State<TeacherHomeScreen> createState() => _TeacherHomeScreenState();
+}
+
+class _TeacherHomeScreenState extends State<TeacherHomeScreen> {
+  bool _isLoading = true;
+  String? _errorMessage;
+  Map<String, dynamic>? _selectedRoute;
+  Map<String, dynamic>? _bus;
+  List<Map<String, dynamic>> _students = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTeacherData();
+  }
+
+  Future<void> _loadTeacherData() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final response = await http.get(
+        AppConfig.routesUri,
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+      );
+      if (!mounted) return;
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final body = jsonDecode(response.body) as List<dynamic>;
+        final routes = body.map((e) => e as Map<String, dynamic>).toList();
+        final selectedRoute = routes.isNotEmpty ? routes.first : null;
+        Map<String, dynamic>? bus;
+        List<Map<String, dynamic>> students = const [];
+        if (selectedRoute != null && selectedRoute['bus_id'] != null) {
+          final busResponse = await http.get(
+            Uri.parse('${AppConfig.apiBaseUrl}/api/v1/buses/${selectedRoute['bus_id']}'),
+            headers: {
+              'Accept': 'application/json',
+              'Authorization': 'Bearer ${widget.accessToken}',
+            },
+          );
+          if (busResponse.statusCode >= 200 && busResponse.statusCode < 300) {
+            bus = jsonDecode(busResponse.body) as Map<String, dynamic>;
+          }
+        }
+        if (selectedRoute != null) {
+          final studentsResponse = await http.get(
+            Uri.parse('${AppConfig.apiBaseUrl}/api/v1/students?route_id=${Uri.encodeComponent(selectedRoute['id'].toString())}'),
+            headers: {
+              'Accept': 'application/json',
+              'Authorization': 'Bearer ${widget.accessToken}',
+            },
+          );
+          if (studentsResponse.statusCode >= 200 && studentsResponse.statusCode < 300) {
+            final studentsBody = jsonDecode(studentsResponse.body) as List<dynamic>;
+            students = studentsBody.map((e) => e as Map<String, dynamic>).toList();
+          }
+        }
+        if (!mounted) return;
+        setState(() {
+          _selectedRoute = selectedRoute;
+          _bus = bus;
+          _students = students;
+          _isLoading = false;
+        });
+        return;
+      }
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : <String, dynamic>{};
+      setState(() {
+        _errorMessage = (body['detail'] ?? 'Unable to load your assigned route.').toString();
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Unable to connect to the server. Please try again.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _showAttendance() async {
+    if (_selectedRoute == null) {
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TeacherAttendanceScreen(
+          accessToken: widget.accessToken,
+          route: _selectedRoute!,
+          bus: _bus,
+          students: _students,
+        ),
+      ),
+    );
+    if (mounted) {
+      _loadTeacherData();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Teacher Dashboard'),
+        actions: [
+          IconButton(
+            onPressed: () => _signOut(context),
+            icon: const Icon(Icons.logout_rounded),
+            tooltip: 'Sign out',
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _errorMessage != null
+                  ? _buildErrorState()
+                  : _buildTeacherContent(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline_rounded, size: 52, color: Colors.red),
+          const SizedBox(height: 16),
+          Text(_errorMessage!, textAlign: TextAlign.center),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: _loadTeacherData,
+            child: const Text('Retry'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTeacherContent() {
+    if (_selectedRoute == null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            Icon(Icons.route_outlined, size: 52),
+            SizedBox(height: 16),
+            Text('No assigned route yet.'),
+            SizedBox(height: 8),
+            Text('Your administrator must assign you to a route before attendance can be marked.'),
+          ],
+        ),
+      );
+    }
+
+    return ListView(
+      children: [
+        Text(_selectedRoute!['name']?.toString() ?? 'Assigned route', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 12),
+        Card(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _detailRow('Route start', _selectedRoute!['start_location']?.toString() ?? 'N/A'),
+                _detailRow('Route end', _selectedRoute!['end_location']?.toString() ?? 'N/A'),
+                _detailRow('Route status', _selectedRoute!['status']?.toString() ?? 'N/A'),
+                _detailRow('Bus', _bus != null ? _bus!['bus_number']?.toString() ?? 'Assigned' : 'Unassigned'),
+                _detailRow('Bus status', _bus != null ? _bus!['status']?.toString() ?? 'N/A' : 'N/A'),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _showAttendance,
+                    icon: const Icon(Icons.checklist_rtl_rounded),
+                    label: const Text('Mark attendance'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        const Text('Students on this route', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 12),
+        ..._students.map((student) => Card(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+              child: ListTile(
+                title: Text('${student['first_name']} ${student['last_name']}'),
+                subtitle: Text('Grade ${student['grade'] ?? 'N/A'}'),
+              ),
+            )),
+      ],
+    );
+  }
+}
+
+class TeacherAttendanceScreen extends StatefulWidget {
+  const TeacherAttendanceScreen({
+    super.key,
+    required this.accessToken,
+    required this.route,
+    required this.bus,
+    required this.students,
+  });
+
+  final String accessToken;
+  final Map<String, dynamic> route;
+  final Map<String, dynamic>? bus;
+  final List<Map<String, dynamic>> students;
+
+  @override
+  State<TeacherAttendanceScreen> createState() => _TeacherAttendanceScreenState();
+}
+
+class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
+  bool _isSubmitting = false;
+  String? _message;
+
+  Future<void> _markAttendance(Map<String, dynamic> student, String status, String actionType) async {
+    setState(() {
+      _isSubmitting = true;
+      _message = null;
+    });
+    try {
+      final response = await http.post(
+        AppConfig.attendanceUri,
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+        body: jsonEncode({
+          'student_id': student['id'],
+          'bus_id': widget.bus?['id'],
+          'route_id': widget.route['id'],
+          'status': status,
+          'action_type': actionType,
+        }),
+      );
+      if (!mounted) return;
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        setState(() {
+          _message = 'Marked ${student['first_name']} ${student['last_name']} as $status.';
+        });
+        return;
+      }
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : <String, dynamic>{};
+      setState(() {
+        _message = (body['detail'] ?? 'Unable to mark attendance.').toString();
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Unable to connect to the server. Please try again.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Attendance')), 
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: const [
-              Icon(Icons.person_outline_rounded, size: 72, color: Color(0xFFF59E0B)),
-              SizedBox(height: 20),
-              Text(
-                'Welcome to the parent portal.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-              ),
-              SizedBox(height: 12),
-              Text(
-                'Your child and bus details are available through the admin dashboard.',
-                textAlign: TextAlign.center,
-              ),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (widget.bus != null) ...[
+                Text('Bus: ${widget.bus!['bus_number']}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+              ],
+              if (widget.students.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Text('No students are assigned to this route yet.'),
+                )
+              else
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: widget.students.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
+                    itemBuilder: (context, index) {
+                      final student = widget.students[index];
+                      return Card(
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('${student['first_name']} ${student['last_name']}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 8),
+                              Text('Grade ${student['grade'] ?? 'N/A'}'),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: FilledButton(
+                                      onPressed: _isSubmitting ? null : () => _markAttendance(student, 'boarded', 'pickup'),
+                                      child: const Text('Mark boarded'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: FilledButton(
+                                      onPressed: _isSubmitting ? null : () => _markAttendance(student, 'dropped', 'dropoff'),
+                                      child: const Text('Mark dropped'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              if (_message != null) ...[
+                const SizedBox(height: 12),
+                Text(_message!, style: TextStyle(color: Theme.of(context).colorScheme.primary)),
+              ],
             ],
           ),
         ),
@@ -501,7 +2069,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               width: 76,
                               height: 76,
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.18),
+                                color: Colors.white.withValues(alpha: 46),
                                 borderRadius: BorderRadius.circular(22),
                               ),
                               child: const Icon(
@@ -524,7 +2092,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               'Secure transportation access',
                               style: TextStyle(
                                 fontSize: 14,
-                                color: Colors.white.withOpacity(0.9),
+                                color: Colors.white.withValues(alpha: 230),
                               ),
                             ),
                           ],
@@ -820,7 +2388,7 @@ class _BusListScreenState extends State<BusListScreen> {
                 child: ListView.separated(
                   padding: const EdgeInsets.all(16),
                   itemCount: _buses.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  separatorBuilder: (_, _) => const SizedBox(height: 12),
                   itemBuilder: (context, index) {
                     final bus = _buses[index];
                     return Card(
@@ -1153,7 +2721,7 @@ class _BusMapScreenState extends State<BusMapScreen> {
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                color: Colors.black.withOpacity(0.03),
+                color: Colors.black.withValues(alpha: 8),
                 child: Text(
                   'Last updated: ${_lastUpdated!.toLocal().toString()}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
@@ -1296,7 +2864,7 @@ class _DriverModeScreenState extends State<DriverModeScreen> {
               ),
               const SizedBox(height: 24),
               DropdownButtonFormField<String>(
-                value: _selectedBusId,
+                initialValue: _selectedBusId,
                 decoration: const InputDecoration(
                   labelText: 'Bus',
                   border: OutlineInputBorder(),
@@ -1513,7 +3081,7 @@ class _AddBusScreenState extends State<AddBusScreen> {
                     ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
-                      value: _status,
+                      initialValue: _status,
                       decoration: const InputDecoration(
                         labelText: 'Status',
                         border: OutlineInputBorder(),
