@@ -11,11 +11,12 @@ from app.api.deps import get_current_user
 
 router = APIRouter()
 
-@router.get("/", response_model=List[DriverResponse])
+@router.get("", response_model=List[DriverResponse])
+@router.get("/", response_model=List[DriverResponse], include_in_schema=False)
 async def list_drivers(
     status: Optional[str] = Query(None, description="Filter by driver status"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=100, description="Pagination limit (max 100)"),
     db: AsyncSession = Depends(get_db),
     current_user: Profile = Depends(get_current_user)
 ):
@@ -31,7 +32,8 @@ async def list_drivers(
     drivers = result.scalars().all()
     return drivers
 
-@router.post("/", response_model=DriverResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=DriverResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=DriverResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 async def create_driver(
     driver_in: DriverCreate,
     db: AsyncSession = Depends(get_db),

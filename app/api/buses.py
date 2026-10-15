@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.models.bus import Bus
+from app.models.driver import Driver
 from app.models.gps_log import GpsLog
 from app.models.profile import Profile
 from app.models.route import Route
@@ -21,7 +22,7 @@ async def list_buses(
     status: Optional[str] = Query(None, description="Filter by bus status"),
     driver_id: Optional[str] = Query(None, description="Filter by driver ID"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=100, description="Pagination limit (max 100)"),
     db: AsyncSession = Depends(get_db),
     current_user: Profile = Depends(get_current_user)
 ):
@@ -126,6 +127,32 @@ async def create_bus_gps(
     bus = result.scalars().first()
     if not bus:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bus not found")
+
+    if current_user.role == "admin":
+        pass
+    else:
+        driver_result = await db.execute(select(Driver).where(Driver.user_id == str(current_user.id)))
+        driver = driver_result.scalars().first()
+        if not driver:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to update this bus location",
+            )
+
+        # Check direct bus assignment or route-based driver assignment
+        is_assigned = (bus.driver_id == driver.id)
+        if not is_assigned:
+            route_check = await db.execute(
+                select(Route.id).where(Route.bus_id == bus.id, Route.driver_id == driver.id)
+            )
+            if route_check.scalars().first() is not None:
+                is_assigned = True
+
+        if not is_assigned:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to update this bus location",
+            )
 
     if gps_in.route_id is not None:
         route_result = await db.execute(select(Route).where(Route.id == gps_in.route_id))

@@ -8,6 +8,7 @@ class RouteBase(BaseModel):
     end_location: str
     bus_id: Optional[str] = None
     driver_id: Optional[str] = None
+    teacher_id: Optional[str] = None
     waypoints: Optional[List[Dict[str, Any]]] = []
     scheduled_start_time: Optional[str] = None
     scheduled_end_time: Optional[str] = None
@@ -22,6 +23,7 @@ class RouteUpdate(BaseModel):
     end_location: Optional[str] = None
     bus_id: Optional[str] = None
     driver_id: Optional[str] = None
+    teacher_id: Optional[str] = None
     waypoints: Optional[List[Dict[str, Any]]] = None
     scheduled_start_time: Optional[str] = None
     scheduled_end_time: Optional[str] = None

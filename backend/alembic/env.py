@@ -24,7 +24,8 @@ from app.config import settings
 target_metadata = Base.metadata
 
 # Set sqlalchemy.url from settings dynamically
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1) if settings.DATABASE_URL.startswith("postgresql://") else settings.DATABASE_URL)
+db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1) if settings.DATABASE_URL.startswith("postgresql://") else settings.DATABASE_URL
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

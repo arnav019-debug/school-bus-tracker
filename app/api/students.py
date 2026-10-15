@@ -11,18 +11,20 @@ from app.api.deps import get_current_user
 
 router = APIRouter()
 
-@router.get("/", response_model=List[StudentResponse])
+@router.get("", response_model=List[StudentResponse])
+@router.get("/", response_model=List[StudentResponse], include_in_schema=False)
 async def list_students(
     route_id: Optional[str] = Query(None, description="Filter by route ID"),
     parent_id: Optional[str] = Query(None, description="Filter by parent profile ID"),
     grade: Optional[str] = Query(None, description="Filter by grade"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=100, description="Pagination limit (max 100)"),
     db: AsyncSession = Depends(get_db),
     current_user: Profile = Depends(get_current_user)
 ):
     """
     Retrieve all students with optional filtering and pagination.
+    Resolves effective route for today (Asia/Kolkata) so parents track the approved route.
     """
     query = select(Student)
     if route_id:
@@ -35,9 +37,29 @@ async def list_students(
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
     students = result.scalars().all()
-    return students
 
-@router.post("/", response_model=StudentResponse, status_code=status.HTTP_201_CREATED)
+    from app.services.attendance_service import get_effective_route_and_bus_for_student, get_kolkata_today
+    today = get_kolkata_today()
+    response_students = []
+    for s in students:
+        eff_route, _ = await get_effective_route_and_bus_for_student(db, str(s.id), today)
+        s_dict = {
+            "id": str(s.id),
+            "first_name": s.first_name,
+            "last_name": s.last_name,
+            "grade": s.grade,
+            "parent_id": str(s.parent_id) if s.parent_id else None,
+            "route_id": eff_route or (str(s.route_id) if s.route_id else None),
+            "pickup_stop": s.pickup_stop,
+            "dropoff_stop": s.dropoff_stop,
+            "qr_code_id": s.qr_code_id,
+            "created_at": s.created_at,
+        }
+        response_students.append(StudentResponse.model_validate(s_dict))
+    return response_students
+
+@router.post("", response_model=StudentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=StudentResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 async def create_student(
     student_in: StudentCreate,
     db: AsyncSession = Depends(get_db),
@@ -72,7 +94,21 @@ async def get_student(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student not found"
         )
-    return student
+    from app.services.attendance_service import get_effective_route_and_bus_for_student, get_kolkata_today
+    eff_route, _ = await get_effective_route_and_bus_for_student(db, str(student.id), get_kolkata_today())
+    s_dict = {
+        "id": str(student.id),
+        "first_name": student.first_name,
+        "last_name": student.last_name,
+        "grade": student.grade,
+        "parent_id": str(student.parent_id) if student.parent_id else None,
+        "route_id": eff_route or (str(student.route_id) if student.route_id else None),
+        "pickup_stop": student.pickup_stop,
+        "dropoff_stop": student.dropoff_stop,
+        "qr_code_id": student.qr_code_id,
+        "created_at": student.created_at,
+    }
+    return StudentResponse.model_validate(s_dict)
 
 @router.put("/{student_id}", response_model=StudentResponse)
 async def update_student(
