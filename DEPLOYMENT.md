@@ -191,20 +191,26 @@ alembic downgrade 8e29d71c4f10
 ## 3. Backend Deployment (Render)
 
 ### Environment Variables
-Configure these in the Render Dashboard (**Environment Settings**):
+Configure these in the Render Dashboard (**Environment Settings**).
 
-| Variable | Description | Example / Note |
+> [!IMPORTANT]
+> **Only add environment variables if they are missing.** Never overwrite or modify your existing `DATABASE_URL` or `SUPABASE_*` credentials.
+> - `CORS_ORIGINS` requires no setting (safe production defaults are automatically applied).
+> - Custom SMTP is only needed if you wish to test the forgot-password recovery flow; Supabase's default sender is rate-limited to 3–4 emails/hour.
+
+| Variable | Description | Requirement |
 |---|---|---|
-| `DATABASE_URL` | Supabase AsyncPG connection string | `postgresql+asyncpg://postgres:pass@db.supabase.co:5432/postgres` |
-| `ENVIRONMENT` | Deployment environment mode | `production` (strictly enforces Supabase Auth & disables local secret fallback) |
-| `PUBLIC_BASE_URL` | Canonical public HTTPS base URL | `https://school-bus-tracker-crwb.onrender.com` |
-| `PASSWORD_RESET_REDIRECT_URL` | Web reset page redirect destination | `https://school-bus-tracker-crwb.onrender.com/reset-password` |
-| `SUPABASE_URL` | Supabase Project URL | `https://xyzproject.supabase.co` |
-| `SUPABASE_KEY` | Supabase Anon Key | `eyJh...` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key | `eyJh...` (used for server-side user admin) |
-| `FIREBASE_CREDENTIALS` | Firebase Service Account (JSON file path or raw JSON string) | `{"type": "service_account", ...}` |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | Optional raw JSON string for Firebase service account | Alternative to file path credentials |
-| `FIREBASE_PROJECT_ID` | Optional Firebase project ID | `school-bus-tracker-prod` |
+| `DATABASE_URL` | Supabase AsyncPG connection string (`postgresql+asyncpg://...`) | Copy from existing Render settings. |
+| `ENVIRONMENT` | Deployment environment mode | Set to `production`. Local JWT auth is strictly disabled outside `development`/`test`. |
+| `SECRET_KEY` | Server secret key for JWT signing outside dev/test | Set to a random string of at least 32 characters (generate via `openssl rand -hex 32`). Must never be committed or printed. |
+| `PUBLIC_BASE_URL` | Canonical public HTTPS base URL | Set to `https://school-bus-tracker-crwb.onrender.com` |
+| `PASSWORD_RESET_REDIRECT_URL` | Web reset page redirect destination | Set to `https://school-bus-tracker-crwb.onrender.com/reset-password` |
+| `SUPABASE_URL` | Supabase Project URL (`https://xyz.supabase.co`) | Copy from existing Render settings. |
+| `SUPABASE_KEY` | Supabase Anon Key (`eyJh...`) | Copy from existing Render settings. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key (`eyJh...`) | Copy from existing Render settings. |
+| `SUPABASE_JWT_SECRET` | Supabase JWT Secret (from Supabase Settings > API) | Copy from existing Render settings / Supabase. |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Optional raw JSON string for Firebase service account | Optional; push notifications only. |
+| `FIREBASE_PROJECT_ID` | Optional Firebase project ID | Optional; push notifications only. |
 
 ### Render Service Settings
 - **Runtime**: Python 3
@@ -245,38 +251,57 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 
 ---
 
-## 5. Role-by-Role Smoke Testing Checklist
+## 5. Smoke Testing Setup & Role-by-Role Checklist
 
-### Admin Smoke Test
-- [ ] Log in with Admin account.
-- [ ] Navigate to **Manage students**: create student, assign parent and route.
-- [ ] Navigate to **Manage routes**: assign bus and teacher.
-- [ ] Navigate to **Route change requests**: view pending parent requests; test **Approve** and **Reject**.
-- [ ] View **Attendance Roster**: specify date and teacher_id to inspect class records.
+### Test Data Setup
 
-### Teacher Smoke Test
-- [ ] Log in with assigned Teacher account.
-- [ ] Open **Teacher Attendance**: verify assigned route students appear for today (IST).
-- [ ] Date picker: select past dates within the last 7 days; verify future dates and dates older than 7 days are blocked.
-- [ ] Mark student **Present** or **Absent**: verify status updates immediately.
-- [ ] Verify approved temporary students (via RouteChangeRequests) show up on the teacher's roster on their assigned dates.
+1. **User Accounts**:
+   - Register or create users using plus-aliases of your own Gmail (e.g. `arnavg791+teacher@gmail.com`, `arnavg791+driver@gmail.com`, `arnavg791+parent@gmail.com`).
+   - Use unique, strong passwords generated from your password manager.
+   - When finished with testing, delete the test user accounts from Supabase Dashboard (**Authentication > Users**).
 
-### Parent Smoke Test
-- [ ] Log in with Parent account.
-- [ ] Verify child information, pickup/dropoff stops, and assigned bus/driver details display properly.
-- [ ] Tap **View bus location**:
-  - Verify map loads without involuntary recentering.
-  - Test **Follow Bus** toggle and **Recenter on Bus** FAB.
-  - Verify "Last updated X ago" indicator and stale banner if signal $>3$ minutes old.
-- [ ] Open **Route & bus change requests**:
-  - Tap **+ New Request**, select target route, dates, reason, and submit.
-  - Verify request appears with "PENDING" status chip.
-  - Test cancellation of pending request.
-- [ ] Push Notifications: When child is marked absent by teacher, verify push notification is received (or logged in notification logs).
+2. **Role Promotion (SQL only for roles)**:
+   In the Supabase SQL Editor, run:
+   ```sql
+   UPDATE profiles SET role = 'teacher' WHERE email = 'arnavg791+teacher@gmail.com';
+   -- Check output: Must return "UPDATE 1". If "UPDATE 0", register that email in the app first, then rerun.
 
-### Driver Smoke Test
-- [ ] Log in with Driver account.
-- [ ] Open **Driver Mode**: select assigned bus.
-- [ ] Tap **Start sharing**: confirm location permissions prompt and live coordinates transmission.
-- [ ] Simulate network disconnect: confirm backoff retry timer activates without crashing.
-- [ ] Tap **Stop sharing**: confirm GPS tracking gracefully unregisters.
+   UPDATE profiles SET role = 'driver' WHERE email = 'arnavg791+driver@gmail.com';
+   -- Check output: Must return "UPDATE 1". If "UPDATE 0", register that email in the app first, then rerun.
+   ```
+
+3. **Entity Creation (Via Admin Screens in the App)**:
+   Log in with an Admin account (`arnavg791+admin@gmail.com` or your existing admin login):
+   - **Buses**: Open **View buses** $\to$ tap **+ Add Bus** $\to$ enter bus number (e.g. `BUS-01`) and license plate.
+   - **Drivers**: Open **Manage drivers** $\to$ tap **+ Add Driver** $\to$ enter license number and phone linked to the driver user.
+   - **Routes**: Open **Manage routes** $\to$ tap **+ Add Route** $\to$ enter route name, start location, and end location. Tap **Assign route** to assign the teacher and bus.
+   - **Students**: Open **Manage students** $\to$ tap **+ Add Student** $\to$ enter student name, grade, select the parent, and assign the route.
+
+---
+
+### Role-by-Role Smoke Testing Checklist
+
+- [ ] **Admin**:
+  - Log in with Admin account.
+  - Navigate to **Manage students**: verify student created and assigned to route and parent.
+  - Navigate to **Manage routes**: verify route displays assigned teacher and bus.
+  - Navigate to **Route change requests**: review pending parent requests.
+  - View **Attendance Roster**: verify class attendance records can be inspected.
+
+- [ ] **Teacher**:
+  - Log in with `arnavg791+teacher@gmail.com`.
+  - Open **Teacher Attendance**: verify assigned route students appear for today (IST).
+  - Date picker: confirm past dates within the last 7 days can be selected; verify future dates and dates older than 7 days are disabled.
+  - Mark student **Present** or **Absent**: verify status updates immediately.
+
+- [ ] **Parent**:
+  - Log in with `arnavg791+parent@gmail.com`.
+  - Verify child information, pickup/dropoff stops, and assigned bus/driver details display properly.
+  - Tap **View bus location**: test the **Follow Bus** toggle and recenter FAB.
+  - Open **Route & bus change requests** $\to$ tap **+ New Request** $\to$ submit a request for tomorrow $\to$ verify request shows as `PENDING`.
+
+- [ ] **Driver**:
+  - Log in with `arnavg791+driver@gmail.com`.
+  - Open **Driver Mode**: select assigned bus.
+  - Tap **Start sharing**: confirm location permissions prompt and live coordinates transmission (200 OK).
+  - Tap **Stop sharing**: confirm GPS tracking gracefully terminates.

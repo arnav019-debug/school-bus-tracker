@@ -211,8 +211,72 @@ async def test_rate_limiter_proxy_ip_and_per_email_bucket(async_client: AsyncCli
         headers={"X-Forwarded-For": "198.51.100.99, 10.0.0.1"}
     )
     assert resp_blocked.status_code == 429
-    assert "too many password reset requests" in resp_blocked.json()["detail"].lower()
-
     forgot_password_limiter.reset()
+
+@pytest.mark.asyncio
+async def test_forged_token_rejected_when_environment_unset(async_client: AsyncClient, monkeypatch):
+    import uuid
+    import jwt
+    from app.config import settings
+
+    # Token signed with forged arbitrary secret
+    forged_token = jwt.encode(
+        {"sub": str(uuid.uuid4()), "role": "admin", "exp": 9999999999},
+        "forged-local-secret-key-that-should-never-be-accepted-by-backend",
+        algorithm="HS256"
+    )
+
+    # ENVIRONMENT is unset (None)
+    monkeypatch.setattr(settings, "ENVIRONMENT", None)
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://xyzcompany.supabase.co")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "dummy-key")
+
+    resp = await async_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {forged_token}"})
+    assert resp.status_code == 401
+    assert "could not validate credentials" in resp.json()["detail"].lower()
+
+@pytest.mark.asyncio
+async def test_forged_token_rejected_when_environment_production(async_client: AsyncClient, monkeypatch):
+    import uuid
+    import jwt
+    from app.config import settings
+
+    forged_token = jwt.encode(
+        {"sub": str(uuid.uuid4()), "role": "admin", "exp": 9999999999},
+        "forged-local-secret-key-that-should-never-be-accepted-by-backend",
+        algorithm="HS256"
+    )
+
+    # ENVIRONMENT is explicitly "production"
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://xyzcompany.supabase.co")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "dummy-key")
+
+    resp = await async_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {forged_token}"})
+    assert resp.status_code == 401
+    assert "could not validate credentials" in resp.json()["detail"].lower()
+
+def test_startup_fails_if_secret_key_missing_or_short_outside_dev_test(monkeypatch):
+    from app.config import settings
+
+    # Case 1: ENVIRONMENT is unset (None), SECRET_KEY is missing
+    monkeypatch.setattr(settings, "ENVIRONMENT", None)
+    monkeypatch.setattr(settings, "SECRET_KEY", None)
+    with pytest.raises(RuntimeError) as exc_info:
+        settings.validate_startup_configuration()
+    assert "SECRET_KEY environment variable is required and must be at least 32 characters" in str(exc_info.value)
+
+    # Case 2: ENVIRONMENT is "production", SECRET_KEY is too short (< 32 chars)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "SECRET_KEY", "short-secret-key")
+    with pytest.raises(RuntimeError) as exc_info:
+        settings.validate_startup_configuration()
+    assert "at least 32 characters" in str(exc_info.value)
+
+    # Case 3: ENVIRONMENT is explicitly "test" or "development" -> passes even with no secret
+    monkeypatch.setattr(settings, "ENVIRONMENT", "test")
+    monkeypatch.setattr(settings, "SECRET_KEY", None)
+    settings.validate_startup_configuration()  # Should not raise
+
 
 

@@ -9,6 +9,7 @@ from app.api import api_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup actions
+    settings.validate_startup_configuration()
     await init_db()
     yield
     # Shutdown actions

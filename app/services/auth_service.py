@@ -92,7 +92,12 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    secret = settings.SECRET_KEY or (
+        "insecure-local-dev-test-secret-key-32chars" if settings.is_local_auth_allowed() else None
+    )
+    if not secret:
+        raise ValueError("Cannot sign access token: SECRET_KEY is not configured.")
+    encoded_jwt = jwt.encode(to_encode, secret, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 _jwks_client: Optional[PyJWKClient] = None
@@ -110,7 +115,7 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
     Decodes JWT access token.
     Prioritizes Supabase JWKS / Supabase JWT Secret when Supabase is enabled.
     Falls back to local SECRET_KEY ONLY if running in test or development mode.
-    In production mode, tokens signed locally with SECRET_KEY are strictly rejected.
+    In production mode (or when ENVIRONMENT is unset), tokens signed locally with SECRET_KEY are strictly rejected.
     """
     # 1. Attempt with Supabase JWKS if configured
     if uses_supabase_auth():
@@ -143,10 +148,11 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
             except jwt.PyJWTError as e:
                 logger.debug("Failed to decode JWT with Supabase secret: %s", e)
 
-    # 3. Local fallback with SECRET_KEY: PERMITTED ONLY IN TEST OR DEV
+    # 3. Local fallback with SECRET_KEY: PERMITTED ONLY IN EXPLICIT TEST OR DEV
     if settings.is_local_auth_allowed():
+        secret = settings.SECRET_KEY or "insecure-local-dev-test-secret-key-32chars"
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            payload = jwt.decode(token, secret, algorithms=[settings.ALGORITHM])
             return payload
         except jwt.PyJWTError:
             pass
