@@ -256,22 +256,22 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 ### Test Data Setup
 
 1. **User Accounts**:
-   - Register or create users using plus-aliases of your own Gmail (e.g. `arnavg791+teacher@gmail.com`, `arnavg791+driver@gmail.com`, `arnavg791+parent@gmail.com`).
+   - Register or create users using plus-aliases of your own Gmail (e.g. `YOURNAME+teacher@gmail.com`, `YOURNAME+driver@gmail.com`, `YOURNAME+parent@gmail.com`).
    - Use unique, strong passwords generated from your password manager.
    - When finished with testing, delete the test user accounts from Supabase Dashboard (**Authentication > Users**).
 
 2. **Role Promotion (SQL only for roles)**:
    In the Supabase SQL Editor, run:
    ```sql
-   UPDATE profiles SET role = 'teacher' WHERE email = 'arnavg791+teacher@gmail.com';
+   UPDATE profiles SET role = 'teacher' WHERE email = 'YOURNAME+teacher@gmail.com';
    -- Check output: Must return "UPDATE 1". If "UPDATE 0", register that email in the app first, then rerun.
 
-   UPDATE profiles SET role = 'driver' WHERE email = 'arnavg791+driver@gmail.com';
+   UPDATE profiles SET role = 'driver' WHERE email = 'YOURNAME+driver@gmail.com';
    -- Check output: Must return "UPDATE 1". If "UPDATE 0", register that email in the app first, then rerun.
    ```
 
 3. **Entity Creation (Via Admin Screens in the App)**:
-   Log in with an Admin account (`arnavg791+admin@gmail.com` or your existing admin login):
+   Log in with an Admin account (`YOURNAME+admin@gmail.com` or your existing admin login):
    - **Buses**: Open **View buses** $\to$ tap **+ Add Bus** $\to$ enter bus number (e.g. `BUS-01`) and license plate.
    - **Drivers**: Open **Manage drivers** $\to$ tap **+ Add Driver** $\to$ enter license number and phone linked to the driver user.
    - **Routes**: Open **Manage routes** $\to$ tap **+ Add Route** $\to$ enter route name, start location, and end location. Tap **Assign route** to assign the teacher and bus.
@@ -289,19 +289,19 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
   - View **Attendance Roster**: verify class attendance records can be inspected.
 
 - [ ] **Teacher**:
-  - Log in with `arnavg791+teacher@gmail.com`.
+  - Log in with `YOURNAME+teacher@gmail.com`.
   - Open **Teacher Attendance**: verify assigned route students appear for today (IST).
   - Date picker: confirm past dates within the last 7 days can be selected; verify future dates and dates older than 7 days are disabled.
   - Mark student **Present** or **Absent**: verify status updates immediately.
 
 - [ ] **Parent**:
-  - Log in with `arnavg791+parent@gmail.com`.
+  - Log in with `YOURNAME+parent@gmail.com`.
   - Verify child information, pickup/dropoff stops, and assigned bus/driver details display properly.
   - Tap **View bus location**: test the **Follow Bus** toggle and recenter FAB.
   - Open **Route & bus change requests** $\to$ tap **+ New Request** $\to$ submit a request for tomorrow $\to$ verify request shows as `PENDING`.
 
 - [ ] **Driver**:
-  - Log in with `arnavg791+driver@gmail.com`.
+  - Log in with `YOURNAME+driver@gmail.com`.
   - Open **Driver Mode**: select assigned bus.
   - Tap **Start sharing**: confirm location permissions prompt and live coordinates transmission (200 OK).
   - Tap **Stop sharing**: confirm GPS tracking gracefully terminates.

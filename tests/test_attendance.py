@@ -426,7 +426,7 @@ async def test_admin_ui_assignment_flow_and_roster_link(async_client: AsyncClien
     # 2. Admin creates driver
     driver_resp = await async_client.post("/api/v1/drivers/", json={
         "license_number": "DL999999",
-        "phone": "+919876543210",
+        "phone": "+15550199999",
         "status": "active"
     }, headers=admin_headers)
     assert driver_resp.status_code == 201
@@ -572,7 +572,7 @@ async def test_driver_roster_access(async_client: AsyncClient):
     # Create driver record
     driver_resp = await async_client.post("/api/v1/drivers/", json={
         "license_number": "DL-ROST-01",
-        "phone": "+9876543210",
+        "phone": "+15550198888",
         "status": "active",
         "user_id": driver_user_id,
     }, headers=admin_headers)
