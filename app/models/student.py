@@ -16,7 +16,7 @@ class Student(Base):
     pickup_stop: Mapped[str] = mapped_column(String(255), nullable=True)
     dropoff_stop: Mapped[str] = mapped_column(String(255), nullable=True)
     qr_code_id: Mapped[str] = mapped_column(String(100), unique=True, default=lambda: f"QR-{uuid.uuid4().hex[:8].upper()}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     parent = relationship("Profile", back_populates="students")
     route = relationship("Route", back_populates="students")

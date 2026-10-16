@@ -19,7 +19,7 @@ class Route(Base):
     scheduled_start_time: Mapped[str] = mapped_column(String(50), nullable=True)
     scheduled_end_time: Mapped[str] = mapped_column(String(50), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="planned")  # planned, in_progress, completed, cancelled
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     bus = relationship("Bus", back_populates="routes")
     driver = relationship("Driver", back_populates="routes")

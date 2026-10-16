@@ -12,7 +12,7 @@ class Driver(Base):
     license_number: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     phone: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="active")  # active, inactive, on_duty
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     profile = relationship("Profile", back_populates="driver")
     buses = relationship("Bus", back_populates="driver")
