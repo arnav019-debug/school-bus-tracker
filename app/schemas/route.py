@@ -1,5 +1,5 @@
-from datetime import datetime
-from typing import Optional, List, Dict, Any
+from datetime import datetime, time
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, ConfigDict
 
 class RouteBase(BaseModel):
@@ -10,8 +10,8 @@ class RouteBase(BaseModel):
     driver_id: Optional[str] = None
     teacher_id: Optional[str] = None
     waypoints: Optional[List[Dict[str, Any]]] = []
-    scheduled_start_time: Optional[str] = None
-    scheduled_end_time: Optional[str] = None
+    scheduled_start_time: Optional[Union[time, str]] = None
+    scheduled_end_time: Optional[Union[time, str]] = None
     status: Optional[str] = "planned"  # planned, in_progress, completed, cancelled
 
 class RouteCreate(RouteBase):

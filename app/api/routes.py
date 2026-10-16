@@ -38,6 +38,18 @@ async def list_routes(
     routes = result.scalars().all()
     return routes
 
+from datetime import time as time_type
+
+def _parse_time(val):
+    if not val:
+        return None
+    if isinstance(val, time_type):
+        return val
+    try:
+        return time_type.fromisoformat(str(val))
+    except Exception:
+        return None
+
 @router.post("", response_model=RouteResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=RouteResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 async def create_route(
@@ -49,7 +61,12 @@ async def create_route(
     Create a new route record.
     """
     from app.models.bus import Bus
-    route = Route(**route_in.model_dump())
+    data = route_in.model_dump()
+    if data.get("scheduled_start_time"):
+        data["scheduled_start_time"] = _parse_time(data["scheduled_start_time"])
+    if data.get("scheduled_end_time"):
+        data["scheduled_end_time"] = _parse_time(data["scheduled_end_time"])
+    route = Route(**data)
     db.add(route)
     if route.bus_id and route.driver_id:
         bus_res = await db.execute(select(Bus).where(Bus.id == route.bus_id))
@@ -98,6 +115,10 @@ async def update_route(
         )
 
     update_data = route_in.model_dump(exclude_unset=True)
+    if "scheduled_start_time" in update_data and update_data["scheduled_start_time"]:
+        update_data["scheduled_start_time"] = _parse_time(update_data["scheduled_start_time"])
+    if "scheduled_end_time" in update_data and update_data["scheduled_end_time"]:
+        update_data["scheduled_end_time"] = _parse_time(update_data["scheduled_end_time"])
     for field, value in update_data.items():
         setattr(route, field, value)
 

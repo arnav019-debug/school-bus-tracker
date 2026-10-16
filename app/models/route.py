@@ -1,7 +1,7 @@
 import uuid
 import json
-from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Text, JSON, UUID
+from datetime import datetime, timezone, time
+from sqlalchemy import String, DateTime, ForeignKey, Text, JSON, UUID, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -16,8 +16,8 @@ class Route(Base):
     start_location: Mapped[str] = mapped_column(String(255), nullable=False)
     end_location: Mapped[str] = mapped_column(String(255), nullable=False)
     waypoints: Mapped[dict] = mapped_column(JSON, default=list)
-    scheduled_start_time: Mapped[str] = mapped_column(String(50), nullable=True)
-    scheduled_end_time: Mapped[str] = mapped_column(String(50), nullable=True)
+    scheduled_start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    scheduled_end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="planned")  # planned, in_progress, completed, cancelled
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
