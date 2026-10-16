@@ -12,6 +12,7 @@ class Route(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     bus_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("buses.id", ondelete="SET NULL"), nullable=True)
     driver_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("drivers.id", ondelete="SET NULL"), nullable=True)
+    teacher_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     start_location: Mapped[str] = mapped_column(String(255), nullable=False)
     end_location: Mapped[str] = mapped_column(String(255), nullable=False)
     waypoints: Mapped[dict] = mapped_column(JSON, default=list)

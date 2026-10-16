@@ -34,6 +34,7 @@ class Base(DeclarativeBase):
 # Import models before create_all so optional tables, including gps_logs, are
 # registered with SQLAlchemy metadata at application startup.
 from app.models.gps_log import GpsLog  # noqa: E402, F401
+from app.models.attendance import Attendance  # noqa: E402, F401
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """

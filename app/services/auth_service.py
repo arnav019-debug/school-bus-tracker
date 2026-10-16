@@ -13,6 +13,8 @@ from app.config import settings
 
 logger = logging.getLogger("auth_service")
 
+from supabase.lib.client_options import SyncClientOptions
+
 # Password Hashing Context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -20,7 +22,8 @@ def _init_supabase_client(api_key: Optional[str]) -> Optional[Client]:
     if not settings.SUPABASE_URL or not api_key:
         return None
     try:
-        return create_client(settings.SUPABASE_URL, api_key)
+        options = SyncClientOptions(flow_type="implicit")
+        return create_client(settings.SUPABASE_URL, api_key, options=options)
     except Exception as e:
         logger.warning("Could not initialize Supabase client: %s", e)
         return None
@@ -29,6 +32,33 @@ def _init_supabase_client(api_key: Optional[str]) -> Optional[Client]:
 supabase: Optional[Client] = _init_supabase_client(settings.SUPABASE_KEY)
 # Admin client (service role key) for server-side user creation
 supabase_admin: Optional[Client] = _init_supabase_client(settings.SUPABASE_SERVICE_ROLE_KEY)
+
+def send_supabase_password_reset(email: str, redirect_to: Optional[str] = None) -> None:
+    """
+    Sends a password recovery email via Supabase Auth using implicit flow.
+    Never logs or exposes tokens.
+    """
+    if supabase:
+        try:
+            options: Dict[str, Any] = {}
+            target_url = redirect_to or settings.get_password_reset_redirect_url()
+            if target_url and (target_url.startswith("http://") or target_url.startswith("https://")):
+                options["redirect_to"] = target_url
+            supabase.auth.reset_password_for_email(email, options=options)
+        except Exception as e:
+            logger.warning("Supabase reset_password_for_email error: %s", e)
+
+def update_supabase_user_password(user_id: str, new_password: str) -> None:
+    """
+    Updates user password in Supabase Auth via admin service client.
+    """
+    if supabase_admin and settings.SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            supabase_admin.auth.admin.update_user_by_id(user_id, {"password": new_password})
+            return
+        except Exception as e:
+            logger.warning("Supabase admin update_user_by_id error: %s", e)
+            raise ValueError(f"Supabase password update failed: {e}") from e
 
 def uses_supabase_auth() -> bool:
     """True when the app is configured to authenticate against Supabase Auth."""
@@ -62,7 +92,12 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    secret = settings.SECRET_KEY or (
+        "insecure-local-dev-test-secret-key-32chars" if settings.is_local_auth_allowed() else None
+    )
+    if not secret:
+        raise ValueError("Cannot sign access token: SECRET_KEY is not configured.")
+    encoded_jwt = jwt.encode(to_encode, secret, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 _jwks_client: Optional[PyJWKClient] = None
@@ -76,38 +111,73 @@ def get_jwks_client() -> Optional[PyJWKClient]:
     return _jwks_client
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
-    """Decodes JWT access token using SECRET_KEY, Supabase JWKS, or SUPABASE_JWT_SECRET."""
-    # First attempt with local SECRET_KEY
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        return payload
-    except jwt.PyJWTError:
-        pass
+    """
+    Decodes JWT access token.
+    Prioritizes Supabase JWKS / Supabase JWT Secret when Supabase is enabled.
+    Falls back to local SECRET_KEY ONLY if running in test or development mode.
+    In production mode (or when ENVIRONMENT is unset), tokens signed locally with SECRET_KEY are strictly rejected.
+    """
+    # 1. Attempt with Supabase JWKS if configured
+    if uses_supabase_auth():
+        jwks_client = get_jwks_client()
+        if jwks_client:
+            try:
+                signing_key = jwks_client.get_signing_key_from_jwt(token)
+                payload = jwt.decode(
+                    token,
+                    signing_key.key,
+                    algorithms=["ES256"],
+                    options={"verify_aud": False},
+                    leeway=120
+                )
+                return payload
+            except jwt.PyJWTError as e:
+                logger.debug("Failed to decode JWT with Supabase JWKS: %s", e)
 
-    # Second attempt with Supabase JWKS if SUPABASE_URL is provided
-    jwks_client = get_jwks_client()
-    if jwks_client:
-        try:
-            signing_key = jwks_client.get_signing_key_from_jwt(token)
-            payload = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=["ES256"],
-                options={"verify_aud": False},
-                leeway=120
-            )
-            return payload
-        except jwt.PyJWTError as e:
-            logger.warning("Failed to decode JWT with Supabase JWKS: %s", e, exc_info=True)
+        # 2. Attempt with Supabase JWT Secret if configured
+        if settings.SUPABASE_JWT_SECRET:
+            try:
+                payload = jwt.decode(
+                    token,
+                    settings.SUPABASE_JWT_SECRET,
+                    algorithms=["HS256"],
+                    options={"verify_aud": False},
+                    leeway=120
+                )
+                return payload
+            except jwt.PyJWTError as e:
+                logger.debug("Failed to decode JWT with Supabase secret: %s", e)
 
-    # Third attempt with Supabase JWT Secret if provided
-    if settings.SUPABASE_JWT_SECRET:
+    # 3. Local fallback with SECRET_KEY: PERMITTED ONLY IN EXPLICIT TEST OR DEV
+    if settings.is_local_auth_allowed():
+        secret = settings.SECRET_KEY or "insecure-local-dev-test-secret-key-32chars"
         try:
-            payload = jwt.decode(token, settings.SUPABASE_JWT_SECRET, algorithms=["HS256"], options={"verify_aud": False}, leeway=120)
+            payload = jwt.decode(token, secret, algorithms=[settings.ALGORITHM])
             return payload
-        except jwt.PyJWTError as e:
-            logger.debug("Failed to decode JWT with Supabase secret: %s", e)
+        except jwt.PyJWTError:
+            pass
+
     return None
+
+def verify_supabase_recovery_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Verifies a recovery access token directly with Supabase Auth.
+    Returns dict with user_id and email on success, or None on failure.
+    """
+    if not supabase:
+        return None
+    try:
+        user_resp = supabase.auth.get_user(jwt=token)
+        if user_resp and user_resp.user and user_resp.user.id:
+            return {
+                "user_id": str(user_resp.user.id),
+                "email": user_resp.user.email,
+                "sub": str(user_resp.user.id),
+            }
+    except Exception as e:
+        logger.debug("Supabase recovery token verification failed: %s", e)
+    return None
+
 
 def create_supabase_auth_user(
     email: str,
