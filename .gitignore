@@ -11,4 +11,5 @@ google-services.json
 service-account*.json
 firebase-credentials*.json
 sbt-backups/
-
+mobile_app/android/build/
+build/

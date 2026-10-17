@@ -54,4 +54,16 @@ void main() {
     expect(find.text('Email is required'), findsOneWidget);
     expect(find.text('Password is required'), findsOneWidget);
   });
+
+  testWidgets('login screen shows initialMessage when passed', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: LoginScreen(initialMessage: 'Session expired. Please log in again.'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Session expired. Please log in again.'), findsOneWidget);
+  });
 }
+

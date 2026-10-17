@@ -2,13 +2,17 @@ import 'dart:async';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 
-/// Robust HTTP utility that handles Render free-tier cold-starts.
+/// Robust HTTP utility that handles Render free-tier cold-starts and session lifecycle.
 /// Raises timeout to 60s, automatically retries on network drops/502/503/504,
-/// and surfaces a friendly "Waking up the server, please wait..." status message.
+/// surfaces a friendly "Waking up the server, please wait..." status message,
+/// and delegates 401 Unauthorized responses to a central session handler.
 class ColdStartHttpClient {
   static const Duration defaultTimeout = Duration(seconds: 60);
   static const Duration wakeUpNoticeThreshold = Duration(milliseconds: 2500);
   static const String wakeUpMessage = 'Waking up the server, please wait...';
+
+  /// Callback triggered when an API response returns 401 Unauthorized (session expired).
+  static void Function(String message)? onUnauthorized;
 
   /// Execute an HTTP GET request with cold-start resilience.
   static Future<http.Response> get(
@@ -18,6 +22,7 @@ class ColdStartHttpClient {
     int maxRetries = 2,
     Duration timeout = defaultTimeout,
     http.Client? client,
+    bool notifyOnUnauthorized = true,
   }) {
     return _sendWithRetry(
       () {
@@ -27,6 +32,7 @@ class ColdStartHttpClient {
       onStatusChange: onStatusChange,
       maxRetries: maxRetries,
       timeout: timeout,
+      notifyOnUnauthorized: notifyOnUnauthorized,
     );
   }
 
@@ -39,6 +45,7 @@ class ColdStartHttpClient {
     int maxRetries = 2,
     Duration timeout = defaultTimeout,
     http.Client? client,
+    bool notifyOnUnauthorized = true,
   }) {
     return _sendWithRetry(
       () {
@@ -48,6 +55,53 @@ class ColdStartHttpClient {
       onStatusChange: onStatusChange,
       maxRetries: maxRetries,
       timeout: timeout,
+      notifyOnUnauthorized: notifyOnUnauthorized,
+    );
+  }
+
+  /// Execute an HTTP PUT request with cold-start resilience.
+  static Future<http.Response> put(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+    void Function(String message)? onStatusChange,
+    int maxRetries = 2,
+    Duration timeout = defaultTimeout,
+    http.Client? client,
+    bool notifyOnUnauthorized = true,
+  }) {
+    return _sendWithRetry(
+      () {
+        final c = client ?? http.Client();
+        return c.put(uri, headers: headers, body: body);
+      },
+      onStatusChange: onStatusChange,
+      maxRetries: maxRetries,
+      timeout: timeout,
+      notifyOnUnauthorized: notifyOnUnauthorized,
+    );
+  }
+
+  /// Execute an HTTP DELETE request with cold-start resilience.
+  static Future<http.Response> delete(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+    void Function(String message)? onStatusChange,
+    int maxRetries = 2,
+    Duration timeout = defaultTimeout,
+    http.Client? client,
+    bool notifyOnUnauthorized = true,
+  }) {
+    return _sendWithRetry(
+      () {
+        final c = client ?? http.Client();
+        return c.delete(uri, headers: headers, body: body);
+      },
+      onStatusChange: onStatusChange,
+      maxRetries: maxRetries,
+      timeout: timeout,
+      notifyOnUnauthorized: notifyOnUnauthorized,
     );
   }
 
@@ -58,6 +112,7 @@ class ColdStartHttpClient {
     required int maxRetries,
     required Duration timeout,
     Duration retryDelay = const Duration(seconds: 2),
+    bool notifyOnUnauthorized = true,
   }) async {
     int attempts = 0;
     while (true) {
@@ -84,6 +139,11 @@ class ColdStartHttpClient {
           onStatusChange?.call(wakeUpMessage);
           await Future.delayed(retryDelay);
           continue;
+        }
+
+        // 401 Unauthorized indicates an expired or invalidated session
+        if (response.statusCode == 401 && notifyOnUnauthorized) {
+          onUnauthorized?.call('Session expired. Please log in again.');
         }
 
         return response;
@@ -113,7 +173,9 @@ class ColdStartHttpClient {
         rethrow;
       } catch (e) {
         noticeTimer?.cancel();
-        if (attempts <= maxRetries && (e.toString().contains('Failed host lookup') || e.toString().contains('Connection refused'))) {
+        if (attempts <= maxRetries &&
+            (e.toString().contains('Failed host lookup') ||
+                e.toString().contains('Connection refused'))) {
           onStatusChange?.call(wakeUpMessage);
           await Future.delayed(retryDelay);
           continue;

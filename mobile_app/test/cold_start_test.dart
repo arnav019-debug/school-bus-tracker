@@ -68,5 +68,53 @@ void main() {
       expect(response.statusCode, 200);
       expect(statusMessages, contains(ColdStartHttpClient.wakeUpMessage));
     });
+
+    test('invokes onUnauthorized callback on 401 Unauthorized status', () async {
+      String? unauthorizedMessage;
+      ColdStartHttpClient.onUnauthorized = (msg) {
+        unauthorizedMessage = msg;
+      };
+
+      final mockClient = MockClient((request) async {
+        return http.Response('{"detail": "Could not validate credentials"}', 401);
+      });
+
+      final response = await ColdStartHttpClient.get(
+        Uri.parse('https://example.com/protected'),
+        client: mockClient,
+      );
+
+      expect(response.statusCode, 401);
+      expect(unauthorizedMessage, 'Session expired. Please log in again.');
+
+      ColdStartHttpClient.onUnauthorized = null;
+    });
+
+    test('put and delete methods execute with cold-start client', () async {
+      final mockClient = MockClient((request) async {
+        if (request.method == 'PUT') {
+          return http.Response('{"updated": true}', 200);
+        } else if (request.method == 'DELETE') {
+          return http.Response('{"deleted": true}', 200);
+        }
+        return http.Response('Not Found', 404);
+      });
+
+      final putRes = await ColdStartHttpClient.put(
+        Uri.parse('https://example.com/resource/1'),
+        client: mockClient,
+        body: '{"name": "test"}',
+      );
+      expect(putRes.statusCode, 200);
+      expect(putRes.body, '{"updated": true}');
+
+      final delRes = await ColdStartHttpClient.delete(
+        Uri.parse('https://example.com/resource/1'),
+        client: mockClient,
+      );
+      expect(delRes.statusCode, 200);
+      expect(delRes.body, '{"deleted": true}');
+    });
   });
 }
+

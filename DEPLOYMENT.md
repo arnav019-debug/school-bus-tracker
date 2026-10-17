@@ -422,3 +422,84 @@ To maintain security hygiene or remediate suspected credential exposure, follow 
    - Demo records are clearly isolated, carrying identifiable names and plus-aliased emails (`arnavg791+demo_*@gmail.com`).
    - Run `python3 demo-cleanup.py` from `~/sbt-backups/` whenever you wish to remove all demo data.
 
+---
+
+## 10. Mobile App Release & Publication Runbook
+
+This runbook describes how to build, sign, verify, and publish new Android releases of the School Bus Tracker app for devices that do not use USB debugging.
+
+### 1. Prerequisites
+- **JDK 17**: Ensure OpenJDK 17 is available.
+- **Release Keystore**: Keystore is stored at `~/sbt-backups/release-upload-key.jks` with credentials recorded in `~/sbt-backups/keystore-credentials.txt` (`chmod 600`).
+- **Signing Properties**: `mobile_app/android/key.properties` (gitignored, `chmod 600`) contains:
+  ```properties
+  storePassword=<keystore-password>
+  keyPassword=<key-password>
+  keyAlias=upload
+  storeFile=/Users/arnavgupta/sbt-backups/release-upload-key.jks
+  ```
+
+### 2. Version Bump
+In `mobile_app/pubspec.yaml`, increment the `version` field (e.g. `1.0.1+2` -> `1.0.2+3`).
+
+### 3. Build Signed Release APK
+Run the build specifying the live Render API base URL:
+```bash
+cd mobile_app
+flutter build apk --release --dart-define=API_BASE_URL=https://school-bus-tracker-crwb.onrender.com
+```
+
+### 4. Secret Scan & Signature Verification
+Verify that no server secrets or connection strings leaked into the APK, and verify the v2 signature:
+```bash
+# Verify v2 signature
+JAVA_HOME=/Users/arnavgupta/development/jdk17/Contents/Home \
+  ~/Library/Android/sdk/build-tools/35.0.0/apksigner verify --verbose build/app/outputs/flutter-apk/app-release.apk
+
+# Scan APK contents for secrets
+python3 -c "
+import zipfile, sys
+apk = 'build/app/outputs/flutter-apk/app-release.apk'
+patterns = [rb'service_role', rb'DATABASE_URL', rb'SUPABASE_SERVICE_ROLE_KEY', rb'postgres://']
+with zipfile.ZipFile(apk) as z:
+    for name in z.namelist():
+        data = z.read(name)
+        for p in patterns:
+            if p in data:
+                print('LEAK FOUND:', name, p); sys.exit(1)
+print('APK scan clean!')
+"
+```
+
+### 5. Publish to GitHub Releases
+Copy the APK to `school-bus-tracker.apk` and create a release on the public release repository (`school-bus-tracker-app`):
+```bash
+cp build/app/outputs/flutter-apk/app-release.apk /tmp/school-bus-tracker.apk
+TAG="v1.0.1"
+
+~/bin/gh release create "$TAG" /tmp/school-bus-tracker.apk \
+  --repo arnav019-debug/school-bus-tracker-app \
+  --title "Release $TAG" \
+  --notes "Production build for School Bus Tracker Android."
+```
+
+### 6. Verify Public Download Link & Generate QR Code
+Confirm the download link returns HTTP 200 and matches the SHA-256 hash:
+```bash
+URL="https://github.com/arnav019-debug/school-bus-tracker-app/releases/latest/download/school-bus-tracker.apk"
+curl -sIL "$URL" | grep -E "HTTP/|location:"
+
+# Generate updated QR code for physical distribution
+python3 -c "
+import qrcode
+url = '$URL'
+qr = qrcode.QRCode(box_size=10, border=4)
+qr.add_data(url)
+qr.make(fit=True)
+img = qr.make_image(fill_color='black', back_color='white')
+img.save('/Users/arnavgupta/sbt-backups/apk-link-qr.png')
+print('QR code updated: ~/sbt-backups/apk-link-qr.png')
+"
+```
+
+

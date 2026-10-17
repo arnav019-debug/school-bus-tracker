@@ -184,8 +184,20 @@ Future<void> _signOut(BuildContext context) async {
   );
 }
 
+Future<void> _handleSessionExpired([String message = 'Session expired. Please log in again.']) async {
+  final accessToken = await _secureStorage.read(key: _secureTokenKey);
+  await NotificationSync.unregisterToken(accessToken);
+  await _secureStorage.delete(key: _secureTokenKey);
+  await _secureStorage.delete(key: _secureRoleKey);
+  navigatorKey.currentState?.pushAndRemoveUntil(
+    MaterialPageRoute(builder: (_) => LoginScreen(initialMessage: message)),
+    (route) => false,
+  );
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  ColdStartHttpClient.onUnauthorized = (msg) => _handleSessionExpired(msg);
   await NotificationSync.initialize();
   runApp(
     ChangeNotifierProvider(
@@ -3348,7 +3360,9 @@ class _TeacherAttendanceScreenState extends State<TeacherAttendanceScreen> {
 
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({super.key, this.initialMessage});
+
+  final String? initialMessage;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -3363,6 +3377,14 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   String? _errorMessage;
   String? _statusMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialMessage != null) {
+      _errorMessage = widget.initialMessage;
+    }
+  }
 
   String? _validateEmail(String? value) {
     if (value == null || value.trim().isEmpty) {
@@ -4213,8 +4235,8 @@ class _BusMapScreenState extends State<BusMapScreen> {
     }
 
     try {
-      final response = await http.get(
-        Uri.parse('${AppConfig.apiBaseUrl}/api/v1/buses/${widget.busId}/gps/latest'),
+      final response = await ColdStartHttpClient.get(
+        AppConfig.busLatestGps(widget.busId),
         headers: {
           'Accept': 'application/json',
           'Authorization': 'Bearer ${widget.accessToken}',
@@ -4581,6 +4603,18 @@ class _DriverModeScreenState extends State<DriverModeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Driver mode'),
+        actions: [
+          IconButton(
+            onPressed: () async {
+              await context.read<DriverSharingController>().stopSharing();
+              if (context.mounted) {
+                await _signOut(context);
+              }
+            },
+            icon: const Icon(Icons.logout_rounded),
+            tooltip: 'Sign out',
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(

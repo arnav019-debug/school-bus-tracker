@@ -64,4 +64,8 @@ class AppConfig {
 
   static Uri routeChangeRequestCancel(String id) =>
       Uri.parse('$apiBaseUrl/api/v1/route-change-requests/$id/cancel');
+
+  static Uri busLatestGps(String busId) =>
+      Uri.parse('$apiBaseUrl/api/v1/buses/$busId/gps/latest');
 }
+
