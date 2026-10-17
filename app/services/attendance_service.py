@@ -322,3 +322,102 @@ async def get_students_for_driver(
 
     return roster
 
+
+async def get_parent_accessible_route_ids(db: AsyncSession, parent_user_id: str, target_date: Optional[date] = None) -> List[str]:
+    """Returns all route IDs assigned to children of this parent (permanent + effective)."""
+    date_val = target_date or get_kolkata_today()
+    students_res = await db.execute(select(Student.id, Student.route_id).where(Student.parent_id == str(parent_user_id)))
+    rows = students_res.all()
+    route_ids = set()
+    for s_id, s_route in rows:
+        if s_route:
+            route_ids.add(str(s_route))
+        eff_route, _ = await get_effective_route_and_bus_for_student(db, str(s_id), date_val)
+        if eff_route:
+            route_ids.add(str(eff_route))
+    return list(route_ids)
+
+
+async def get_parent_accessible_bus_ids(db: AsyncSession, parent_user_id: str, target_date: Optional[date] = None) -> List[str]:
+    """Returns all bus IDs associated with children of this parent."""
+    date_val = target_date or get_kolkata_today()
+    students_res = await db.execute(select(Student.id, Student.route_id).where(Student.parent_id == str(parent_user_id)))
+    rows = students_res.all()
+    bus_ids = set()
+    for s_id, s_route in rows:
+        eff_route, eff_bus = await get_effective_route_and_bus_for_student(db, str(s_id), date_val)
+        if eff_bus:
+            bus_ids.add(str(eff_bus))
+        elif s_route:
+            r_res = await db.execute(select(Route.bus_id).where(Route.id == str(s_route)))
+            b = r_res.scalars().first()
+            if b:
+                bus_ids.add(str(b))
+    return list(bus_ids)
+
+
+async def get_parent_accessible_driver_ids(db: AsyncSession, parent_user_id: str, target_date: Optional[date] = None) -> List[str]:
+    """Returns all driver IDs associated with children of this parent (driver contact)."""
+    bus_ids = await get_parent_accessible_bus_ids(db, parent_user_id, target_date)
+    route_ids = await get_parent_accessible_route_ids(db, parent_user_id, target_date)
+    driver_ids = set()
+    if bus_ids:
+        b_res = await db.execute(select(Bus.driver_id).where(Bus.id.in_(bus_ids), Bus.driver_id.isnot(None)))
+        for d in b_res.scalars().all():
+            driver_ids.add(str(d))
+    if route_ids:
+        r_res = await db.execute(select(Route.driver_id).where(Route.id.in_(route_ids), Route.driver_id.isnot(None)))
+        for d in r_res.scalars().all():
+            driver_ids.add(str(d))
+    return list(driver_ids)
+
+
+async def get_driver_accessible_route_ids(db: AsyncSession, driver_user_id: str) -> List[str]:
+    """Returns all route IDs assigned to this driver."""
+    from app.models.driver import Driver
+    d_res = await db.execute(select(Driver.id).where(Driver.user_id == str(driver_user_id)))
+    driver_id = d_res.scalars().first()
+    if not driver_id:
+        return []
+    r_res = await db.execute(select(Route.id).where(Route.driver_id == driver_id))
+    return [str(r) for r in r_res.scalars().all()]
+
+
+async def get_driver_accessible_bus_ids(db: AsyncSession, driver_user_id: str) -> List[str]:
+    """Returns all bus IDs assigned to this driver directly or via route."""
+    from app.models.driver import Driver
+    d_res = await db.execute(select(Driver.id).where(Driver.user_id == str(driver_user_id)))
+    driver_id = d_res.scalars().first()
+    if not driver_id:
+        return []
+    bus_ids = set()
+    b_res = await db.execute(select(Bus.id).where(Bus.driver_id == driver_id))
+    for b in b_res.scalars().all():
+        bus_ids.add(str(b))
+    r_res = await db.execute(select(Route.bus_id).where(Route.driver_id == driver_id, Route.bus_id.isnot(None)))
+    for b in r_res.scalars().all():
+        bus_ids.add(str(b))
+    return list(bus_ids)
+
+
+async def get_teacher_accessible_bus_ids(db: AsyncSession, teacher_user_id: str) -> List[str]:
+    """Returns all bus IDs assigned to routes managed by this teacher."""
+    r_res = await db.execute(select(Route.bus_id).where(Route.teacher_id == str(teacher_user_id), Route.bus_id.isnot(None)))
+    return [str(b) for b in r_res.scalars().all()]
+
+
+async def get_teacher_accessible_driver_ids(db: AsyncSession, teacher_user_id: str) -> List[str]:
+    """Returns all driver IDs assigned to routes or buses managed by this teacher."""
+    driver_ids = set()
+    r_res = await db.execute(select(Route.driver_id, Route.bus_id).where(Route.teacher_id == str(teacher_user_id)))
+    for did, bid in r_res.all():
+        if did:
+            driver_ids.add(str(did))
+        if bid:
+            b_res = await db.execute(select(Bus.driver_id).where(Bus.id == bid, Bus.driver_id.isnot(None)))
+            b_driver = b_res.scalars().first()
+            if b_driver:
+                driver_ids.add(str(b_driver))
+    return list(driver_ids)
+
+

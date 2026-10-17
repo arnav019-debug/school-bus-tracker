@@ -155,3 +155,147 @@ async def test_comprehensive_role_permission_matrix(async_client: AsyncClient):
     # 6. Admin deletes attendance record (204)
     del_resp = await async_client.delete(f"/api/v1/attendance/{att_id}", headers=admin_headers)
     assert del_resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_entity_crud_and_cross_scoping_permissions(async_client: AsyncClient):
+    # Setup users
+    admin_headers, admin_id = await get_user_auth(async_client, "crud_admin@example.com", "admin")
+    t1_headers, t1_id = await get_user_auth(async_client, "crud_t1@example.com", "teacher")
+    t2_headers, t2_id = await get_user_auth(async_client, "crud_t2@example.com", "teacher")
+    p1_headers, p1_id = await get_user_auth(async_client, "crud_p1@example.com", "parent")
+    p2_headers, p2_id = await get_user_auth(async_client, "crud_p2@example.com", "parent")
+    d1_headers, d1_id = await get_user_auth(async_client, "crud_d1@example.com", "driver")
+    d2_headers, d2_id = await get_user_auth(async_client, "crud_d2@example.com", "driver")
+
+    # 1. Admin creates core infrastructure: Driver 1, Bus 1, Route 1, Student 1
+    d1_resp = await async_client.post("/api/v1/drivers/", json={
+        "license_number": "LIC-CRUD-D1",
+        "phone": "+1555111111",
+        "user_id": d1_id,
+        "status": "active"
+    }, headers=admin_headers)
+    assert d1_resp.status_code == 201
+    driver_1_id = d1_resp.json()["id"]
+
+    bus1_resp = await async_client.post("/api/v1/buses/", json={
+        "bus_number": "BUS-SCOPE-1",
+        "license_plate": "LP-SCOPE-1",
+        "capacity": 30,
+        "driver_id": driver_1_id,
+        "status": "active"
+    }, headers=admin_headers)
+    assert bus1_resp.status_code == 201
+    bus_1_id = bus1_resp.json()["id"]
+
+    route1_resp = await async_client.post("/api/v1/routes/", json={
+        "name": "Route Scope 1",
+        "start_location": "Depot",
+        "end_location": "School",
+        "bus_id": bus_1_id,
+        "driver_id": driver_1_id,
+        "teacher_id": t1_id,
+        "status": "active"
+    }, headers=admin_headers)
+    assert route1_resp.status_code == 201
+    route_1_id = route1_resp.json()["id"]
+
+    student1_resp = await async_client.post("/api/v1/students/", json={
+        "first_name": "ChildOne",
+        "last_name": "FamilyA",
+        "grade": "Grade 2",
+        "parent_id": p1_id,
+        "route_id": route_1_id
+    }, headers=admin_headers)
+    assert student1_resp.status_code == 201
+    student_1_id = student1_resp.json()["id"]
+
+    # 2. Non-admin roles (Teacher, Driver, Parent) FORBIDDEN from POST/PUT/DELETE on core entities
+    for role_name, h in [("Teacher", t1_headers), ("Driver", d1_headers), ("Parent", p1_headers)]:
+        # Student mutations
+        resp = await async_client.post("/api/v1/students/", json={"first_name": "X", "last_name": "Y"}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to POST /students"
+        resp = await async_client.put(f"/api/v1/students/{student_1_id}", json={"grade": "Grade 9"}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to PUT /students"
+        resp = await async_client.delete(f"/api/v1/students/{student_1_id}", headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to DELETE /students"
+
+        # Route mutations
+        resp = await async_client.post("/api/v1/routes/", json={"name": "Hacked Route", "start_location": "A", "end_location": "B"}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to POST /routes"
+        resp = await async_client.put(f"/api/v1/routes/{route_1_id}", json={"name": "Renamed"}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to PUT /routes"
+        resp = await async_client.delete(f"/api/v1/routes/{route_1_id}", headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to DELETE /routes"
+
+        # Bus mutations
+        resp = await async_client.post("/api/v1/buses/", json={"bus_number": f"B-BAD-{role_name}", "license_plate": f"L-BAD-{role_name}", "capacity": 20}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to POST /buses"
+        resp = await async_client.put(f"/api/v1/buses/{bus_1_id}", json={"capacity": 99}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to PUT /buses"
+        resp = await async_client.delete(f"/api/v1/buses/{bus_1_id}", headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to DELETE /buses"
+
+        # Driver mutations
+        resp = await async_client.post("/api/v1/drivers/", json={"license_number": f"D-BAD-{role_name}", "phone": "+1555999999"}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to POST /drivers"
+        resp = await async_client.put(f"/api/v1/drivers/{driver_1_id}", json={"phone": "+1555888888"}, headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to PUT /drivers"
+        resp = await async_client.delete(f"/api/v1/drivers/{driver_1_id}", headers=h)
+        assert resp.status_code == 403, f"{role_name} was able to DELETE /drivers"
+
+    # 3. Read scoping: Parent 1 (assigned) vs Parent 2 (unassigned)
+    # Parent 1 sees child 1, route 1, bus 1, driver 1
+    p1_students = (await async_client.get("/api/v1/students/", headers=p1_headers)).json()
+    assert any(s["id"] == student_1_id for s in p1_students)
+    assert (await async_client.get(f"/api/v1/students/{student_1_id}", headers=p1_headers)).status_code == 200
+
+    p1_routes = (await async_client.get("/api/v1/routes/", headers=p1_headers)).json()
+    assert any(r["id"] == route_1_id for r in p1_routes)
+    assert (await async_client.get(f"/api/v1/routes/{route_1_id}", headers=p1_headers)).status_code == 200
+
+    p1_buses = (await async_client.get("/api/v1/buses/", headers=p1_headers)).json()
+    assert any(b["id"] == bus_1_id for b in p1_buses)
+    assert (await async_client.get(f"/api/v1/buses/{bus_1_id}", headers=p1_headers)).status_code == 200
+
+    p1_drivers = (await async_client.get("/api/v1/drivers/", headers=p1_headers)).json()
+    assert any(d["id"] == driver_1_id for d in p1_drivers)
+    assert (await async_client.get(f"/api/v1/drivers/{driver_1_id}", headers=p1_headers)).status_code == 200
+
+    # Parent 2 sees NOTHING of child 1, route 1, bus 1, driver 1
+    p2_students = (await async_client.get("/api/v1/students/", headers=p2_headers)).json()
+    assert not any(s["id"] == student_1_id for s in p2_students)
+    assert (await async_client.get(f"/api/v1/students/{student_1_id}", headers=p2_headers)).status_code == 403
+
+    p2_routes = (await async_client.get("/api/v1/routes/", headers=p2_headers)).json()
+    assert not any(r["id"] == route_1_id for r in p2_routes)
+    assert (await async_client.get(f"/api/v1/routes/{route_1_id}", headers=p2_headers)).status_code == 403
+
+    p2_buses = (await async_client.get("/api/v1/buses/", headers=p2_headers)).json()
+    assert not any(b["id"] == bus_1_id for b in p2_buses)
+    assert (await async_client.get(f"/api/v1/buses/{bus_1_id}", headers=p2_headers)).status_code == 403
+
+    p2_drivers = (await async_client.get("/api/v1/drivers/", headers=p2_headers)).json()
+    assert not any(d["id"] == driver_1_id for d in p2_drivers)
+    assert (await async_client.get(f"/api/v1/drivers/{driver_1_id}", headers=p2_headers)).status_code == 403
+
+    # 4. Read scoping: Teacher 1 (assigned) vs Teacher 2 (unassigned)
+    assert (await async_client.get(f"/api/v1/routes/{route_1_id}", headers=t1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/routes/{route_1_id}", headers=t2_headers)).status_code == 403
+    assert (await async_client.get(f"/api/v1/students/{student_1_id}", headers=t1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/students/{student_1_id}", headers=t2_headers)).status_code == 403
+    assert (await async_client.get(f"/api/v1/buses/{bus_1_id}", headers=t1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/buses/{bus_1_id}", headers=t2_headers)).status_code == 403
+    assert (await async_client.get(f"/api/v1/drivers/{driver_1_id}", headers=t1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/drivers/{driver_1_id}", headers=t2_headers)).status_code == 403
+
+    # 5. Read scoping: Driver 1 (assigned) vs Driver 2 (unassigned)
+    assert (await async_client.get(f"/api/v1/routes/{route_1_id}", headers=d1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/routes/{route_1_id}", headers=d2_headers)).status_code == 403
+    assert (await async_client.get(f"/api/v1/students/{student_1_id}", headers=d1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/students/{student_1_id}", headers=d2_headers)).status_code == 403
+    assert (await async_client.get(f"/api/v1/buses/{bus_1_id}", headers=d1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/buses/{bus_1_id}", headers=d2_headers)).status_code == 403
+    assert (await async_client.get(f"/api/v1/drivers/{driver_1_id}", headers=d1_headers)).status_code == 200
+    assert (await async_client.get(f"/api/v1/drivers/{driver_1_id}", headers=d2_headers)).status_code == 403
+

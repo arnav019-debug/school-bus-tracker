@@ -26,6 +26,21 @@ async def list_routes(
     Retrieve all routes with optional filtering and pagination.
     """
     query = select(Route)
+    if current_user.role == "teacher":
+        query = query.where(Route.teacher_id == str(current_user.id))
+    elif current_user.role == "driver":
+        from app.services.attendance_service import get_driver_accessible_route_ids
+        d_routes = await get_driver_accessible_route_ids(db, str(current_user.id))
+        if not d_routes:
+            return []
+        query = query.where(Route.id.in_(d_routes))
+    elif current_user.role == "parent":
+        from app.services.attendance_service import get_parent_accessible_route_ids
+        p_routes = await get_parent_accessible_route_ids(db, str(current_user.id))
+        if not p_routes:
+            return []
+        query = query.where(Route.id.in_(p_routes))
+
     if status:
         query = query.where(Route.status == status)
     if bus_id:
@@ -60,6 +75,12 @@ async def create_route(
     """
     Create a new route record.
     """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage routes."
+        )
+
     from app.models.bus import Bus
     data = route_in.model_dump()
     if data.get("scheduled_start_time"):
@@ -93,6 +114,30 @@ async def get_route(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Route not found"
         )
+
+    if current_user.role == "teacher":
+        if not route.teacher_id or str(route.teacher_id) != str(current_user.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: not your assigned route."
+            )
+    elif current_user.role == "driver":
+        from app.services.attendance_service import get_driver_accessible_route_ids
+        d_routes = await get_driver_accessible_route_ids(db, str(current_user.id))
+        if str(route.id) not in d_routes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: not your assigned route."
+            )
+    elif current_user.role == "parent":
+        from app.services.attendance_service import get_parent_accessible_route_ids
+        p_routes = await get_parent_accessible_route_ids(db, str(current_user.id))
+        if str(route.id) not in p_routes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: not your child's route."
+            )
+
     return route
 
 @router.put("/{route_id}", response_model=RouteResponse)
@@ -105,6 +150,12 @@ async def update_route(
     """
     Update a route record.
     """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage routes."
+        )
+
     from app.models.bus import Bus
     result = await db.execute(select(Route).where(Route.id == route_id))
     route = result.scalars().first()
@@ -141,6 +192,12 @@ async def delete_route(
     """
     Delete a route record.
     """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage routes."
+        )
+
     result = await db.execute(select(Route).where(Route.id == route_id))
     route = result.scalars().first()
     if not route:

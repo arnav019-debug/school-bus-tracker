@@ -30,6 +30,25 @@ async def list_buses(
     Retrieve all buses with optional filtering and pagination.
     """
     query = select(Bus)
+    if current_user.role == "teacher":
+        from app.services.attendance_service import get_teacher_accessible_bus_ids
+        t_buses = await get_teacher_accessible_bus_ids(db, str(current_user.id))
+        if not t_buses:
+            return []
+        query = query.where(Bus.id.in_(t_buses))
+    elif current_user.role == "driver":
+        from app.services.attendance_service import get_driver_accessible_bus_ids
+        d_buses = await get_driver_accessible_bus_ids(db, str(current_user.id))
+        if not d_buses:
+            return []
+        query = query.where(Bus.id.in_(d_buses))
+    elif current_user.role == "parent":
+        from app.services.attendance_service import get_parent_accessible_bus_ids
+        p_buses = await get_parent_accessible_bus_ids(db, str(current_user.id))
+        if not p_buses:
+            return []
+        query = query.where(Bus.id.in_(p_buses))
+
     if status:
         query = query.where(Bus.status == status)
     if driver_id:
@@ -50,6 +69,12 @@ async def create_bus(
     """
     Create a new bus record.
     """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage buses."
+        )
+
     # Check for existing bus number or license plate
     existing = await db.execute(
         select(Bus).where((Bus.bus_number == bus_in.bus_number) | (Bus.license_plate == bus_in.license_plate))
@@ -82,6 +107,23 @@ async def get_bus(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Bus not found"
         )
+
+    if current_user.role == "teacher":
+        from app.services.attendance_service import get_teacher_accessible_bus_ids
+        t_buses = await get_teacher_accessible_bus_ids(db, str(current_user.id))
+        if str(bus.id) not in t_buses:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this bus.")
+    elif current_user.role == "driver":
+        from app.services.attendance_service import get_driver_accessible_bus_ids
+        d_buses = await get_driver_accessible_bus_ids(db, str(current_user.id))
+        if str(bus.id) not in d_buses:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this bus.")
+    elif current_user.role == "parent":
+        from app.services.attendance_service import get_parent_accessible_bus_ids
+        p_buses = await get_parent_accessible_bus_ids(db, str(current_user.id))
+        if str(bus.id) not in p_buses:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this bus.")
+
     return bus
 
 @router.put("/{bus_id}", response_model=BusResponse)
@@ -94,6 +136,12 @@ async def update_bus(
     """
     Update a bus record.
     """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage buses."
+        )
+
     result = await db.execute(select(Bus).where(Bus.id == bus_id))
     bus = result.scalars().first()
     if not bus:
@@ -181,6 +229,22 @@ async def get_latest_bus_gps(
     current_user: Profile = Depends(get_current_user),
 ):
     """Return the latest GPS update for a bus."""
+    if current_user.role == "teacher":
+        from app.services.attendance_service import get_teacher_accessible_bus_ids
+        t_buses = await get_teacher_accessible_bus_ids(db, str(current_user.id))
+        if str(bus_id) not in t_buses:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this bus tracking.")
+    elif current_user.role == "driver":
+        from app.services.attendance_service import get_driver_accessible_bus_ids
+        d_buses = await get_driver_accessible_bus_ids(db, str(current_user.id))
+        if str(bus_id) not in d_buses:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this bus tracking.")
+    elif current_user.role == "parent":
+        from app.services.attendance_service import get_parent_accessible_bus_ids
+        p_buses = await get_parent_accessible_bus_ids(db, str(current_user.id))
+        if str(bus_id) not in p_buses:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this bus tracking.")
+
     result = await db.execute(
         select(GpsLog).where(GpsLog.bus_id == bus_id).order_by(GpsLog.timestamp.desc()).limit(1)
     )
@@ -198,6 +262,12 @@ async def delete_bus(
     """
     Delete a bus record.
     """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage buses."
+        )
+
     result = await db.execute(select(Bus).where(Bus.id == bus_id))
     bus = result.scalars().first()
     if not bus:
