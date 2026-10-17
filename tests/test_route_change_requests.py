@@ -550,3 +550,50 @@ async def test_student_endpoints_expose_effective_fields_before_during_after_swa
     assert list_item_after["effective_driver"]["id"] == d1_id
 
 
+@pytest.mark.asyncio
+async def test_admin_delete_route_change_request(async_client: AsyncClient):
+    admin_headers, _ = await get_user_auth(async_client, "admin_del_rc@example.com", "admin")
+    parent_headers, parent_id = await get_user_auth(async_client, "p_del_rc@example.com", "parent")
+
+    # Setup student and request
+    r_resp = await async_client.post("/api/v1/routes", json={
+        "name": "Route for Deletion Test",
+        "start_location": "A",
+        "end_location": "B"
+    }, headers=admin_headers)
+    route_id = r_resp.json()["id"]
+
+    s_resp = await async_client.post("/api/v1/students", json={
+        "first_name": "Delete",
+        "last_name": "TestStudent",
+        "route_id": route_id,
+        "parent_id": parent_id
+    }, headers=admin_headers)
+    student_id = s_resp.json()["id"]
+
+    today = get_kolkata_today()
+    req_resp = await async_client.post("/api/v1/route-change-requests", json={
+        "student_id": student_id,
+        "target_route_id": route_id,
+        "start_date": today.isoformat(),
+        "end_date": today.isoformat(),
+        "reason": "Temporary change"
+    }, headers=parent_headers)
+    assert req_resp.status_code == 201
+    req_id = req_resp.json()["id"]
+
+    # Parent attempt to DELETE -> 403 Forbidden
+    del_parent = await async_client.delete(f"/api/v1/route-change-requests/{req_id}", headers=parent_headers)
+    assert del_parent.status_code == 403
+
+    # Admin DELETE -> 204 No Content
+    del_admin = await async_client.delete(f"/api/v1/route-change-requests/{req_id}", headers=admin_headers)
+    assert del_admin.status_code == 204
+
+    # Second DELETE -> 404 Not Found
+    del_again = await async_client.delete(f"/api/v1/route-change-requests/{req_id}", headers=admin_headers)
+    assert del_again.status_code == 404
+
+
+
+

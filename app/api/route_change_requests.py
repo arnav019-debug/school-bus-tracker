@@ -396,3 +396,32 @@ async def cancel_route_change_request(
         created_at=req.created_at,
         updated_at=req.updated_at
     )
+
+
+@router.delete("/{request_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_route_change_request(
+    request_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Profile = Depends(get_current_user)
+):
+    """
+    Delete a route change request (admin only).
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can delete route change requests."
+        )
+
+    res = await db.execute(select(RouteChangeRequest).where(RouteChangeRequest.id == request_id))
+    req = res.scalars().first()
+    if not req:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Route change request not found"
+        )
+
+    await db.delete(req)
+    await db.commit()
+    return None
+

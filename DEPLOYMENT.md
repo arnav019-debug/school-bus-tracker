@@ -305,3 +305,120 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
   - Open **Driver Mode**: select assigned bus.
   - Tap **Start sharing**: confirm location permissions prompt and live coordinates transmission (200 OK).
   - Tap **Stop sharing**: confirm GPS tracking gracefully terminates.
+
+---
+
+## 6. Automated Live Verification Suite
+
+The repository includes a standalone, re-runnable live verification script (`scripts/verify_live.py`) designed to validate the live production system without modifying permanent records.
+
+### What It Tests:
+1. **Real User Logins**: Authenticates all 5 live demo accounts (Admin, Teacher, Driver, Parent A, Parent B) via `POST /api/v1/auth/login`.
+2. **Security & Role Scoping**:
+   - Confirms Admin has global read visibility across students and routes.
+   - Confirms Parent A sees only their child, their child's route and bus, and that effective fields (`effective_route_id`, `effective_bus_id`, `effective_driver`) are populated.
+   - Confirms Parent A cannot perform admin entity mutations (returns HTTP 403).
+   - Confirms Parent B has 0 students and cannot access Parent A's student by ID (returns 403/404).
+   - Confirms Driver and Teacher see only their assigned routes and rosters.
+3. **Route Swap & Effective Roster Flow**:
+   - Creates a temporary target route with a secondary bus.
+   - Submits a route change request as Parent A and approves it as Admin.
+   - Confirms Parent A's student view updates to show the target route and bus.
+   - Confirms student is absent from original rosters and present on target rosters.
+   - Confirms Parent A has live bus tracking access to the temporary bus.
+4. **Reversible Cleanup**:
+   - Deletes the temporary route change request and target route by exact ID.
+   - Confirms student and rosters revert back to their original state.
+
+### How to Run:
+Ensure `demo-credentials.txt` is present locally at `~/sbt-backups/demo-credentials.txt` (or specify via `--credentials` flag):
+
+```bash
+# Execute verification against the live Render deployment
+python3 scripts/verify_live.py
+
+# Or with custom credentials path
+python3 scripts/verify_live.py --credentials /path/to/demo-credentials.txt
+```
+
+---
+
+## 7. Demo Data Cleanup Guide (`demo-cleanup.py`)
+
+When testing is complete and the live environment needs to be reset to its clean production baseline, run the demo cleanup script stored in `~/sbt-backups/demo-cleanup.py`:
+
+```bash
+cd ~/sbt-backups
+python3 demo-cleanup.py
+```
+
+### What `demo-cleanup.py` Does:
+- Reads database and auth service credentials strictly in-process.
+- Removes all records created for live demo verification by exact ID:
+  - Demo Student (`53d5a13f-b017-4eb1-821d-6e23989c7c93`)
+  - Demo Route (`fb04b655-a9a8-4c0e-b81c-1e17c75fd0b6`)
+  - Demo Driver (`7b783d5f-ab8e-4353-b2cc-f863e056e4ef`)
+  - Demo Bus (`b6c53332-5633-42be-933a-84b1683712b1`)
+  - Demo Users in `auth.users` and `public.profiles` (`arnavg791+demo_*@gmail.com`)
+  - Any temporary attendance, GPS, device token, or notification log rows.
+- Verifies post-cleanup table row counts to confirm zero residual artifacts.
+
+---
+
+## 8. Secret Rotation Runbook
+
+To maintain security hygiene or remediate suspected credential exposure, follow this rotation order:
+
+### 1. Supabase Database Password (`DATABASE_URL`)
+1. In Supabase Dashboard: Navigate to **Project Settings > Database > Database password**.
+2. Click **Reset database password** and copy the new password.
+3. Update `DATABASE_URL` in the Render Dashboard (**Environment > Environment Variables**):
+   ```
+   postgresql+asyncpg://postgres:[NEW_PASSWORD]@[HOST]:5432/postgres
+   ```
+4. Render will trigger a redeploy automatically.
+
+### 2. Supabase API Keys & JWT Secret (`SUPABASE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`)
+1. In Supabase Dashboard: Navigate to **Project Settings > API**.
+2. Under **Project API keys**, click **Generate new JWT secret** (Caution: this invalidates all current user sessions).
+3. Copy the new `anon` key, `service_role` key, and `JWT Secret`.
+4. Update the corresponding Render environment variables:
+   - `SUPABASE_KEY`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `SUPABASE_JWT_SECRET`
+5. Save changes in Render; the backend will redeploy and pick up the new keys.
+
+### 3. Backend Secret Key (`SECRET_KEY`)
+1. Generate a new high-entropy secret key locally:
+   ```bash
+   openssl rand -hex 32
+   ```
+2. In Render Dashboard, update `SECRET_KEY` with the generated value.
+3. Render will redeploy automatically.
+
+### 4. Firebase Service Account (`FIREBASE_SERVICE_ACCOUNT_JSON`)
+1. In Firebase Console: Open **Project Settings > Service accounts**.
+2. Under **Firebase Admin SDK**, click **Generate new private key**.
+3. Copy the contents of the downloaded JSON file to clipboard using `pbcopy`:
+   ```bash
+   pbcopy < ~/Downloads/school-bus-tracker-*.json
+   ```
+4. In Render Dashboard, update `FIREBASE_SERVICE_ACCOUNT_JSON` by pasting clipboard content.
+5. Move the key to `~/sbt-backups/` (`chmod 600`) and delete the file from `~/Downloads`.
+
+---
+
+## 9. Operational Considerations & Known Limitations
+
+1. **Render Free-Tier Spin-Down (Cold Starts)**:
+   - On the Render Free instance type, services automatically spin down after 15 minutes of inbound HTTP inactivity.
+   - The first request following dormancy will experience a cold-start delay of approximately 45–60 seconds while the container initializes and connects to Supabase.
+   - **Mitigation**: The Flutter mobile client implements `ColdStartHttpClient` across all critical authentication and initial data loading flows with extended 60-second timeouts, automatic retry logic on 502/503/504 gateway responses, and an in-app visual indicator (*"Waking up the server, please wait..."*) to keep users informed.
+2. **Supabase Default Email Sender Rate Limits**:
+   - The default Supabase built-in email service is subject to strict rate limits (e.g., 3 emails per hour for password resets and verification).
+   - In production environments with high user volumes, configure custom SMTP in **Authentication > Email Settings > Custom SMTP Provider** (e.g., SendGrid, Resend, AWS SES).
+3. **Demo Data Management**:
+   - Demo accounts and records exist on the live database strictly for system verification and mobile testing.
+   - Demo records are clearly isolated, carrying identifiable names and plus-aliased emails (`arnavg791+demo_*@gmail.com`).
+   - Run `python3 demo-cleanup.py` from `~/sbt-backups/` whenever you wish to remove all demo data.
+

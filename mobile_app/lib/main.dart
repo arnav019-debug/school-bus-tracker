@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -11,21 +13,126 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import 'config/app_config.dart';
+import 'utils/cold_start_http.dart';
 
 const _secureTokenKey = 'access_token';
 const _secureRoleKey = 'user_role';
 final _secureStorage = FlutterSecureStorage();
 
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Background message handler
+}
+
+void _handleNotificationTap(RemoteMessage message) async {
+  final accessToken = await _secureStorage.read(key: _secureTokenKey);
+  final role = await _secureStorage.read(key: _secureRoleKey) ?? 'parent';
+  if (accessToken != null && accessToken.isNotEmpty) {
+    navigatorKey.currentState?.pushAndRemoveUntil(
+      MaterialPageRoute(
+        builder: (_) => RoleBasedHomeScreen(
+          accessToken: accessToken,
+          role: role,
+        ),
+      ),
+      (route) => false,
+    );
+  }
+}
+
 class NotificationSync {
   static const _deviceTokenStorageKey = 'device_fcm_token';
+  static bool _initialized = false;
+
+  /// Initializes Firebase and configures runtime notification handlers.
+  static Future<void> initialize() async {
+    if (_initialized) return;
+    try {
+      await Firebase.initializeApp();
+      FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
+      // Request runtime notification permissions for Android 13+
+      await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      // Fetch FCM token and cache locally
+      // ignore: deprecated_member_use
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token != null && token.isNotEmpty) {
+        await _secureStorage.write(key: _deviceTokenStorageKey, value: token);
+      }
+
+      // Listen for token refreshes
+      // ignore: deprecated_member_use
+      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+        await _secureStorage.write(key: _deviceTokenStorageKey, value: newToken);
+        final accessToken = await _secureStorage.read(key: _secureTokenKey);
+        if (accessToken != null && accessToken.isNotEmpty) {
+          await registerToken(accessToken);
+        }
+      });
+
+      // Handle foreground notifications
+      FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+        final notification = message.notification;
+        if (notification != null) {
+          final context = navigatorKey.currentContext;
+          if (context != null && context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('${notification.title ?? "School Bus Alert"}: ${notification.body ?? ""}'),
+                backgroundColor: const Color(0xFF1E3A8A),
+                duration: const Duration(seconds: 6),
+                action: SnackBarAction(
+                  label: 'View',
+                  textColor: Colors.amber,
+                  onPressed: () => _handleNotificationTap(message),
+                ),
+              ),
+            );
+          }
+        }
+      });
+
+      // Handle tapped notification from background
+      FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+        _handleNotificationTap(message);
+      });
+
+      // Handle notification opening app from terminated state
+      final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+      if (initialMessage != null) {
+        _handleNotificationTap(initialMessage);
+      }
+
+      _initialized = true;
+    } catch (e) {
+      // Gracefully continue if Firebase is not yet configured or in test environments
+      debugPrint('Firebase messaging initialization skipped: $e');
+    }
+  }
 
   /// Registers device token with backend if one exists, otherwise gracefully does nothing.
   static Future<void> registerToken(String accessToken) async {
     try {
-      final token = await _secureStorage.read(key: _deviceTokenStorageKey);
+      var token = await _secureStorage.read(key: _deviceTokenStorageKey);
+      if (token == null || token.isEmpty) {
+        try {
+          // ignore: deprecated_member_use
+          token = await FirebaseMessaging.instance.getToken();
+          if (token != null) {
+            await _secureStorage.write(key: _deviceTokenStorageKey, value: token);
+          }
+        } catch (_) {}
+      }
       if (token == null || token.isEmpty) return;
 
-      await http.post(
+      await ColdStartHttpClient.post(
         AppConfig.notificationsRegisterTokenUri,
         headers: {
           'Content-Type': 'application/json',
@@ -48,7 +155,7 @@ class NotificationSync {
       final token = await _secureStorage.read(key: _deviceTokenStorageKey);
       if (token == null || token.isEmpty || accessToken == null || accessToken.isEmpty) return;
 
-      await http.post(
+      await ColdStartHttpClient.post(
         AppConfig.notificationsUnregisterTokenUri,
         headers: {
           'Content-Type': 'application/json',
@@ -77,7 +184,9 @@ Future<void> _signOut(BuildContext context) async {
   );
 }
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await NotificationSync.initialize();
   runApp(
     ChangeNotifierProvider(
       create: (_) => DriverSharingController(),
@@ -253,6 +362,7 @@ class SchoolBusTrackerApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'School Bus Tracker',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -277,6 +387,7 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   bool _isLoading = true;
+  String? _statusMessage;
 
   @override
   void initState() {
@@ -296,11 +407,18 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     try {
-      final response = await http.get(
+      final response = await ColdStartHttpClient.get(
         AppConfig.authMeUri,
         headers: {
           'Accept': 'application/json',
           'Authorization': 'Bearer $accessToken',
+        },
+        onStatusChange: (msg) {
+          if (mounted) {
+            setState(() {
+              _statusMessage = msg;
+            });
+          }
         },
       );
 
@@ -332,6 +450,7 @@ class _AuthGateState extends State<AuthGate> {
     if (mounted) {
       setState(() {
         _isLoading = false;
+        _statusMessage = null;
       });
     }
   }
@@ -339,8 +458,22 @@ class _AuthGateState extends State<AuthGate> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              if (_statusMessage != null) ...[
+                const SizedBox(height: 16),
+                Text(
+                  _statusMessage!,
+                  style: const TextStyle(color: Colors.black54, fontSize: 14),
+                ),
+              ],
+            ],
+          ),
+        ),
       );
     }
     return const LoginScreen();
@@ -411,6 +544,7 @@ class ParentHomeScreen extends StatefulWidget {
 
 class _ParentHomeScreenState extends State<ParentHomeScreen> {
   bool _isLoading = true;
+  String? _statusMessage;
   String? _errorMessage;
   Map<String, dynamic>? _selectedChild;
   Map<String, dynamic>? _bus;
@@ -425,15 +559,23 @@ class _ParentHomeScreenState extends State<ParentHomeScreen> {
   Future<void> _loadParentData() async {
     setState(() {
       _isLoading = true;
+      _statusMessage = null;
       _errorMessage = null;
     });
 
     try {
-      final response = await http.get(
+      final response = await ColdStartHttpClient.get(
         AppConfig.studentsUri,
         headers: {
           'Accept': 'application/json',
           'Authorization': 'Bearer ${widget.accessToken}',
+        },
+        onStatusChange: (msg) {
+          if (mounted) {
+            setState(() {
+              _statusMessage = msg;
+            });
+          }
         },
       );
 
@@ -446,6 +588,7 @@ class _ParentHomeScreenState extends State<ParentHomeScreen> {
         setState(() {
           _errorMessage = (body['detail'] ?? 'Unable to load your child profile.').toString();
           _isLoading = false;
+          _statusMessage = null;
         });
         return;
       }
@@ -465,7 +608,7 @@ class _ParentHomeScreenState extends State<ParentHomeScreen> {
       final effectiveBusId = selectedChild?['effective_bus_id']?.toString();
 
       if (effectiveRouteId != null && effectiveRouteId.isNotEmpty) {
-        final routeResponse = await http.get(
+        final routeResponse = await ColdStartHttpClient.get(
           AppConfig.routeById(effectiveRouteId),
           headers: {
             'Accept': 'application/json',
@@ -556,7 +699,21 @@ class _ParentHomeScreenState extends State<ParentHomeScreen> {
       ),
       body: SafeArea(
         child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
+            ? Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(),
+                    if (_statusMessage != null) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        _statusMessage!,
+                        style: const TextStyle(color: Colors.black54, fontSize: 14),
+                      ),
+                    ],
+                  ],
+                ),
+              )
             : Padding(
                 padding: const EdgeInsets.all(16),
                 child: _errorMessage != null
@@ -3205,6 +3362,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
+  String? _statusMessage;
 
   String? _validateEmail(String? value) {
     if (value == null || value.trim().isEmpty) {
@@ -3239,11 +3397,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() {
       _isLoading = true;
+      _statusMessage = null;
       _errorMessage = null;
     });
 
     try {
-      final response = await http.post(
+      final response = await ColdStartHttpClient.post(
         AppConfig.authLoginUri,
         headers: {
           'Content-Type': 'application/json',
@@ -3253,6 +3412,13 @@ class _LoginScreenState extends State<LoginScreen> {
           'email': _emailController.text.trim(),
           'password': _passwordController.text,
         }),
+        onStatusChange: (msg) {
+          if (mounted) {
+            setState(() {
+              _statusMessage = msg;
+            });
+          }
+        },
       );
 
       if (!mounted) {
@@ -3556,6 +3722,41 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ),
                                 ),
                                 const SizedBox(height: 8),
+                                if (_statusMessage != null)
+                                  Container(
+                                    padding: const EdgeInsets.all(12),
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.amber.shade50,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: Colors.amber.shade300,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.amber.shade800,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            _statusMessage!,
+                                            style: TextStyle(
+                                              color: Colors.amber.shade900,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 if (_errorMessage != null)
                                   Container(
                                     padding: const EdgeInsets.all(12),
@@ -4330,7 +4531,7 @@ class _DriverModeScreenState extends State<DriverModeScreen> {
 
   Future<void> _loadDriverBuses() async {
     try {
-      final response = await http.get(
+      final response = await ColdStartHttpClient.get(
         AppConfig.busesUri,
         headers: {
           'Accept': 'application/json',
