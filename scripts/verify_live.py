@@ -11,6 +11,7 @@ Usage:
 
 import os
 import sys
+import time
 import argparse
 import datetime
 from datetime import date
@@ -71,9 +72,27 @@ def parse_credentials(filepath: str) -> Dict[str, Any]:
 
     return config
 
+def request_with_retry(method: str, url: str, retries: int = 3, timeout: int = 60, **kwargs) -> requests.Response:
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.request(method, url, timeout=timeout, **kwargs)
+            if resp.status_code in (502, 503, 504) and attempt < retries:
+                time.sleep(2 * attempt)
+                continue
+            return resp
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(2 * attempt)
+            else:
+                raise last_exc
+    return resp
+
 def login(base_url: str, email: str, password: str) -> str:
     login_url = f"{base_url}/api/v1/auth/login"
-    resp = requests.post(
+    resp = request_with_retry(
+        "POST",
         login_url,
         json={"email": email, "password": password},
         headers={"Content-Type": "application/json", "Accept": "application/json"},
@@ -128,20 +147,20 @@ def run_verification(credentials_path: str):
     print("--- [STAGE 2] Auditing Live Scoping & Security Rules ---")
     
     # 2.1 Admin: Global Read Access
-    r_admin_students = requests.get(f"{base_url}/api/v1/students", headers=headers["ADMIN"], timeout=30)
+    r_admin_students = request_with_retry("GET", f"{base_url}/api/v1/students", headers=headers["ADMIN"])
     assert r_admin_students.status_code == 200, f"Admin students failed: {r_admin_students.text}"
     admin_students = r_admin_students.json()
     assert len(admin_students) >= 1, "Admin should see enrolled students"
     print(f"  [PASS] Admin can read all students (count: {len(admin_students)})")
 
-    r_admin_routes = requests.get(f"{base_url}/api/v1/routes", headers=headers["ADMIN"], timeout=30)
+    r_admin_routes = request_with_retry("GET", f"{base_url}/api/v1/routes", headers=headers["ADMIN"])
     assert r_admin_routes.status_code == 200, f"Admin routes failed: {r_admin_routes.text}"
     admin_routes = r_admin_routes.json()
     assert len(admin_routes) >= 1, "Admin should see all routes"
     print(f"  [PASS] Admin can read all routes (count: {len(admin_routes)})")
 
     # 2.2 Parent A: Scoped strictly to own child
-    r_parent_students = requests.get(f"{base_url}/api/v1/students", headers=headers["PARENT_A"], timeout=30)
+    r_parent_students = request_with_retry("GET", f"{base_url}/api/v1/students", headers=headers["PARENT_A"])
     assert r_parent_students.status_code == 200, f"Parent A students failed: {r_parent_students.text}"
     p_students = r_parent_students.json()
     assert len(p_students) == 1, f"Parent A must see exactly 1 student, got: {len(p_students)}"
@@ -156,7 +175,7 @@ def run_verification(credentials_path: str):
     print(f"  [PASS] Parent A student response includes effective_route_id, effective_bus_id, effective_driver")
 
     # Parent A routes and buses scoped
-    r_parent_routes = requests.get(f"{base_url}/api/v1/routes", headers=headers["PARENT_A"], timeout=30)
+    r_parent_routes = request_with_retry("GET", f"{base_url}/api/v1/routes", headers=headers["PARENT_A"])
     assert r_parent_routes.status_code == 200
     p_routes = r_parent_routes.json()
     assert len(p_routes) == 1, f"Parent A should see only child's route, got {len(p_routes)}"
@@ -164,45 +183,45 @@ def run_verification(credentials_path: str):
     print(f"  [PASS] Parent A sees only child's assigned route ({p_routes[0].get('name')})")
 
     # Parent A mutation protection (403 Forbidden)
-    r_parent_mutate = requests.post(
+    r_parent_mutate = request_with_retry(
+        "POST",
         f"{base_url}/api/v1/students",
         headers=headers["PARENT_A"],
-        json={"first_name": "Leak", "last_name": "Test", "route_id": orig_route_id},
-        timeout=30
+        json={"first_name": "Leak", "last_name": "Test", "route_id": orig_route_id}
     )
     assert r_parent_mutate.status_code == 403, f"Parent A should be 403 forbidden to create students, got {r_parent_mutate.status_code}"
     print("  [PASS] Parent A mutation blocked (POST /students -> 403 Forbidden)")
 
     # 2.3 Parent B: Isolation & Cross-Family Leak Prevention
-    r_parent_b_students = requests.get(f"{base_url}/api/v1/students", headers=headers["PARENT_B"], timeout=30)
+    r_parent_b_students = request_with_retry("GET", f"{base_url}/api/v1/students", headers=headers["PARENT_B"])
     assert r_parent_b_students.status_code == 200
     p_b_students = r_parent_b_students.json()
     assert len(p_b_students) == 0, f"Parent B should have 0 students, got {len(p_b_students)}"
     print("  [PASS] Parent B sees 0 students (clean isolation)")
 
-    r_parent_b_leak = requests.get(f"{base_url}/api/v1/students/{student_id}", headers=headers["PARENT_B"], timeout=30)
+    r_parent_b_leak = request_with_retry("GET", f"{base_url}/api/v1/students/{student_id}", headers=headers["PARENT_B"])
     assert r_parent_b_leak.status_code in (403, 404), f"Parent B accessing Parent A child must fail, got {r_parent_b_leak.status_code}"
     print(f"  [PASS] Cross-family student access rejected (status {r_parent_b_leak.status_code})")
 
     # 2.4 Driver: Route & Bus Scoping
-    r_driver_routes = requests.get(f"{base_url}/api/v1/routes", headers=headers["DRIVER"], timeout=30)
+    r_driver_routes = request_with_retry("GET", f"{base_url}/api/v1/routes", headers=headers["DRIVER"])
     assert r_driver_routes.status_code == 200
     d_routes = r_driver_routes.json()
     assert len(d_routes) == 1, f"Driver must see only assigned route, got {len(d_routes)}"
     print(f"  [PASS] Driver sees only assigned route: {d_routes[0].get('name')}")
 
     # Driver mutation attempt blocked
-    r_driver_mutate = requests.post(
+    r_driver_mutate = request_with_retry(
+        "POST",
         f"{base_url}/api/v1/routes",
         headers=headers["DRIVER"],
-        json={"name": "Forbidden Driver Route", "start_location": "X", "end_location": "Y"},
-        timeout=30
+        json={"name": "Forbidden Driver Route", "start_location": "X", "end_location": "Y"}
     )
     assert r_driver_mutate.status_code == 403, f"Driver cannot create routes, got {r_driver_mutate.status_code}"
     print("  [PASS] Driver mutation blocked (POST /routes -> 403 Forbidden)")
 
     # 2.5 Teacher: Assigned Route Scoping
-    r_teacher_routes = requests.get(f"{base_url}/api/v1/routes", headers=headers["TEACHER"], timeout=30)
+    r_teacher_routes = request_with_retry("GET", f"{base_url}/api/v1/routes", headers=headers["TEACHER"])
     assert r_teacher_routes.status_code == 200
     t_routes = r_teacher_routes.json()
     assert len(t_routes) == 1, f"Teacher must see assigned route, got {len(t_routes)}"
@@ -214,21 +233,20 @@ def run_verification(credentials_path: str):
     print("--- [STAGE 3] Route Swap Request & Roster Verification Flow ---")
     
     # 3.1 Verify Pre-Swap Rosters
-    r_teach_roster = requests.get(f"{base_url}/api/v1/attendance/roster", headers=headers["TEACHER"], timeout=30)
+    r_teach_roster = request_with_retry("GET", f"{base_url}/api/v1/attendance/roster", headers=headers["TEACHER"])
     assert r_teach_roster.status_code == 200, r_teach_roster.text
     teach_roster_ids = [s["student_id"] for s in r_teach_roster.json()]
     assert student_id in teach_roster_ids, "Student must be on Teacher roster before swap"
     print("  [PRE-SWAP] Student present on Demo Teacher roster: OK")
 
-    r_driver_roster = requests.get(f"{base_url}/api/v1/attendance/roster", headers=headers["DRIVER"], timeout=30)
+    r_driver_roster = request_with_retry("GET", f"{base_url}/api/v1/attendance/roster", headers=headers["DRIVER"])
     assert r_driver_roster.status_code == 200, r_driver_roster.text
     driver_roster_ids = [s["student_id"] for s in r_driver_roster.json()]
     assert student_id in driver_roster_ids, "Student must be on Demo Driver roster before swap"
     print("  [PRE-SWAP] Student present on Demo Driver roster: OK")
 
     # 3.2 Create temporary target route as Admin using second pre-existing bus
-    # Look up second bus ID
-    r_all_buses = requests.get(f"{base_url}/api/v1/buses", headers=headers["ADMIN"], timeout=30)
+    r_all_buses = request_with_retry("GET", f"{base_url}/api/v1/buses", headers=headers["ADMIN"])
     assert r_all_buses.status_code == 200
     all_buses = r_all_buses.json()
     target_bus = next((b for b in all_buses if b["id"] != orig_bus_id), None)
@@ -243,7 +261,7 @@ def run_verification(credentials_path: str):
         "teacher_id": accounts["TEACHER"]["user_id"],
         "waypoints": []
     }
-    r_create_target = requests.post(f"{base_url}/api/v1/routes", headers=headers["ADMIN"], json=temp_route_payload, timeout=30)
+    r_create_target = request_with_retry("POST", f"{base_url}/api/v1/routes", headers=headers["ADMIN"], json=temp_route_payload)
     assert r_create_target.status_code == 201, f"Failed creating temp target route: {r_create_target.text}"
     temp_target_route = r_create_target.json()
     temp_target_route_id = temp_target_route["id"]
@@ -261,24 +279,24 @@ def run_verification(credentials_path: str):
             "end_date": today_iso,
             "reason": "Live automated verification test run"
         }
-        r_sub_swap = requests.post(f"{base_url}/api/v1/route-change-requests", headers=headers["PARENT_A"], json=swap_payload, timeout=30)
+        r_sub_swap = request_with_retry("POST", f"{base_url}/api/v1/route-change-requests", headers=headers["PARENT_A"], json=swap_payload)
         assert r_sub_swap.status_code == 201, f"Failed submitting swap request: {r_sub_swap.text}"
         temp_swap = r_sub_swap.json()
         temp_swap_id = temp_swap["id"]
         print(f"  [SWAP] Parent A submitted swap request (ID: {temp_swap_id}, status: {temp_swap['status']})")
 
         # 3.4 Admin approves the swap request
-        r_approve = requests.put(
+        r_approve = request_with_retry(
+            "PUT",
             f"{base_url}/api/v1/route-change-requests/{temp_swap_id}/approve",
             headers=headers["ADMIN"],
-            json={"review_notes": "Live test automated approval"},
-            timeout=30
+            json={"review_notes": "Live test automated approval"}
         )
         assert r_approve.status_code == 200, f"Approval failed: {r_approve.text}"
         print("  [SWAP] Admin approved swap request: status is now 'approved'")
 
         # 3.5 Verify student effective fields updated
-        r_stu_swap = requests.get(f"{base_url}/api/v1/students/{student_id}", headers=headers["PARENT_A"], timeout=30)
+        r_stu_swap = request_with_retry("GET", f"{base_url}/api/v1/students/{student_id}", headers=headers["PARENT_A"])
         assert r_stu_swap.status_code == 200
         stu_swap = r_stu_swap.json()
         assert stu_swap.get("route_id") == orig_route_id, "Permanent route must remain unchanged"
@@ -287,7 +305,7 @@ def run_verification(credentials_path: str):
         print("  [SWAP] Parent view verified: student reflects temporary target route & target bus")
 
         # 3.6 Verify Parent A bus tracking access
-        r_target_bus = requests.get(f"{base_url}/api/v1/buses/{target_bus_id}", headers=headers["PARENT_A"], timeout=30)
+        r_target_bus = request_with_retry("GET", f"{base_url}/api/v1/buses/{target_bus_id}", headers=headers["PARENT_A"])
         assert r_target_bus.status_code == 200, f"Parent should have tracking access to target bus: {r_target_bus.text}"
         print("  [SWAP] Parent tracking access granted to target bus: OK")
 
@@ -295,15 +313,15 @@ def run_verification(credentials_path: str):
         # Step 4: Strict Cleanup
         print("\n--- [STAGE 4] Reversible Cleanup & Restoration ---")
         if temp_swap_id:
-            r_del_swap = requests.delete(f"{base_url}/api/v1/route-change-requests/{temp_swap_id}", headers=headers["ADMIN"], timeout=30)
+            r_del_swap = request_with_retry("DELETE", f"{base_url}/api/v1/route-change-requests/{temp_swap_id}", headers=headers["ADMIN"])
             print(f"  [CLEANUP] Deleted swap request {temp_swap_id}: HTTP {r_del_swap.status_code}")
 
         if temp_target_route_id:
-            r_del_route = requests.delete(f"{base_url}/api/v1/routes/{temp_target_route_id}", headers=headers["ADMIN"], timeout=30)
+            r_del_route = request_with_retry("DELETE", f"{base_url}/api/v1/routes/{temp_target_route_id}", headers=headers["ADMIN"])
             print(f"  [CLEANUP] Deleted temporary target route {temp_target_route_id}: HTTP {r_del_route.status_code}")
 
     # 4.1 Verify Student fields restored to original
-    r_stu_revert = requests.get(f"{base_url}/api/v1/students/{student_id}", headers=headers["PARENT_A"], timeout=30)
+    r_stu_revert = request_with_retry("GET", f"{base_url}/api/v1/students/{student_id}", headers=headers["PARENT_A"])
     assert r_stu_revert.status_code == 200
     stu_revert = r_stu_revert.json()
     assert stu_revert.get("effective_route_id") == orig_route_id, "Effective route must revert back to permanent"
@@ -311,11 +329,11 @@ def run_verification(credentials_path: str):
     print("  [PASS] Student effective route and bus reverted back to original")
 
     # 4.2 Verify Rosters restored
-    r_teach_restored = requests.get(f"{base_url}/api/v1/attendance/roster", headers=headers["TEACHER"], timeout=30)
+    r_teach_restored = request_with_retry("GET", f"{base_url}/api/v1/attendance/roster", headers=headers["TEACHER"])
     assert r_teach_restored.status_code == 200
     assert student_id in [s["student_id"] for s in r_teach_restored.json()], "Student must be back on teacher roster"
 
-    r_driver_restored = requests.get(f"{base_url}/api/v1/attendance/roster", headers=headers["DRIVER"], timeout=30)
+    r_driver_restored = request_with_retry("GET", f"{base_url}/api/v1/attendance/roster", headers=headers["DRIVER"])
     assert r_driver_restored.status_code == 200
     assert student_id in [s["student_id"] for s in r_driver_restored.json()], "Student must be back on driver roster"
     print("  [PASS] Teacher and Driver rosters fully restored")
