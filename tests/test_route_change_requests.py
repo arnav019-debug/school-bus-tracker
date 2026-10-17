@@ -408,3 +408,145 @@ async def test_effective_route_and_bus_boundary_dates(async_client: AsyncClient)
         assert route_eff == r1_id
         assert bus_eff == b1_id
 
+@pytest.mark.asyncio
+async def test_student_endpoints_expose_effective_fields_before_during_after_swap(async_client: AsyncClient):
+    admin_headers, _ = await get_user_auth(async_client, "admin_eff_api@example.com", "admin")
+    parent_headers, parent_id = await get_user_auth(async_client, "parent_eff_api@example.com", "parent")
+
+    # Drivers
+    d1_resp = await async_client.post("/api/v1/drivers/", json={
+        "license_number": "LIC-EFF-D1",
+        "phone": "+1555000001",
+        "status": "active"
+    }, headers=admin_headers)
+    d1_id = d1_resp.json()["id"]
+
+    d2_resp = await async_client.post("/api/v1/drivers/", json={
+        "license_number": "LIC-EFF-D2",
+        "phone": "+1555000002",
+        "status": "active"
+    }, headers=admin_headers)
+    d2_id = d2_resp.json()["id"]
+
+    # Buses
+    b1_resp = await async_client.post("/api/v1/buses/", json={
+        "bus_number": "BUS-EFF-1",
+        "license_plate": "LP-EFF-1",
+        "capacity": 30,
+        "driver_id": d1_id,
+        "status": "active"
+    }, headers=admin_headers)
+    b1_id = b1_resp.json()["id"]
+
+    b2_resp = await async_client.post("/api/v1/buses/", json={
+        "bus_number": "BUS-EFF-2",
+        "license_plate": "LP-EFF-2",
+        "capacity": 30,
+        "driver_id": d2_id,
+        "status": "active"
+    }, headers=admin_headers)
+    b2_id = b2_resp.json()["id"]
+
+    # Routes
+    r1_resp = await async_client.post("/api/v1/routes/", json={
+        "name": "Route Eff 1",
+        "start_location": "S1",
+        "end_location": "E1",
+        "bus_id": b1_id,
+        "driver_id": d1_id,
+        "status": "active"
+    }, headers=admin_headers)
+    r1_id = r1_resp.json()["id"]
+
+    r2_resp = await async_client.post("/api/v1/routes/", json={
+        "name": "Route Eff 2",
+        "start_location": "S2",
+        "end_location": "E2",
+        "bus_id": b2_id,
+        "driver_id": d2_id,
+        "status": "active"
+    }, headers=admin_headers)
+    r2_id = r2_resp.json()["id"]
+
+    # Student
+    s_resp = await async_client.post("/api/v1/students/", json={
+        "first_name": "Effective",
+        "last_name": "Student",
+        "parent_id": parent_id,
+        "route_id": r1_id
+    }, headers=admin_headers)
+    student_id = s_resp.json()["id"]
+
+    today = get_kolkata_today()
+    start_date = today + timedelta(days=2)
+    end_date = today + timedelta(days=4)
+
+    req_resp = await async_client.post("/api/v1/route-change-requests", json={
+        "student_id": student_id,
+        "target_route_id": r2_id,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "reason": "Effective API testing"
+    }, headers=parent_headers)
+    assert req_resp.status_code == 201
+    req_id = req_resp.json()["id"]
+
+    appr_resp = await async_client.put(f"/api/v1/route-change-requests/{req_id}/approve", headers=admin_headers)
+    assert appr_resp.status_code == 200
+
+    # 1. Before swap date: permanent Route 1, Bus 1, Driver 1
+    day_before = (start_date - timedelta(days=1)).isoformat()
+    s_get_before = await async_client.get(f"/api/v1/students/{student_id}?date={day_before}", headers=parent_headers)
+    assert s_get_before.status_code == 200
+    data_before = s_get_before.json()
+    assert data_before["route_id"] == r1_id
+    assert data_before["effective_route_id"] == r1_id
+    assert data_before["effective_bus_id"] == b1_id
+    assert data_before["effective_driver"]["id"] == d1_id
+    assert data_before["effective_driver"]["phone"] == "+1555000001"
+    assert data_before["effective_driver_contact"]["phone"] == "+1555000001"
+
+    s_list_before = await async_client.get(f"/api/v1/students?date={day_before}", headers=parent_headers)
+    assert s_list_before.status_code == 200
+    list_item_before = next(item for item in s_list_before.json() if item["id"] == student_id)
+    assert list_item_before["effective_route_id"] == r1_id
+    assert list_item_before["effective_bus_id"] == b1_id
+    assert list_item_before["effective_driver"]["id"] == d1_id
+
+    # 2. During swap date: temporary Route 2, Bus 2, Driver 2
+    during_day = start_date.isoformat()
+    s_get_during = await async_client.get(f"/api/v1/students/{student_id}?date={during_day}", headers=parent_headers)
+    assert s_get_during.status_code == 200
+    data_during = s_get_during.json()
+    assert data_during["route_id"] == r1_id  # permanent remains Route 1
+    assert data_during["effective_route_id"] == r2_id
+    assert data_during["effective_bus_id"] == b2_id
+    assert data_during["effective_driver"]["id"] == d2_id
+    assert data_during["effective_driver"]["phone"] == "+1555000002"
+
+    s_list_during = await async_client.get(f"/api/v1/students?date={during_day}", headers=parent_headers)
+    assert s_list_during.status_code == 200
+    list_item_during = next(item for item in s_list_during.json() if item["id"] == student_id)
+    assert list_item_during["effective_route_id"] == r2_id
+    assert list_item_during["effective_bus_id"] == b2_id
+    assert list_item_during["effective_driver"]["id"] == d2_id
+
+    # 3. After swap date: reverted to Route 1, Bus 1, Driver 1
+    day_after = (end_date + timedelta(days=1)).isoformat()
+    s_get_after = await async_client.get(f"/api/v1/students/{student_id}?date={day_after}", headers=parent_headers)
+    assert s_get_after.status_code == 200
+    data_after = s_get_after.json()
+    assert data_after["route_id"] == r1_id
+    assert data_after["effective_route_id"] == r1_id
+    assert data_after["effective_bus_id"] == b1_id
+    assert data_after["effective_driver"]["id"] == d1_id
+    assert data_after["effective_driver"]["phone"] == "+1555000001"
+
+    s_list_after = await async_client.get(f"/api/v1/students?date={day_after}", headers=parent_headers)
+    assert s_list_after.status_code == 200
+    list_item_after = next(item for item in s_list_after.json() if item["id"] == student_id)
+    assert list_item_after["effective_route_id"] == r1_id
+    assert list_item_after["effective_bus_id"] == b1_id
+    assert list_item_after["effective_driver"]["id"] == d1_id
+
+

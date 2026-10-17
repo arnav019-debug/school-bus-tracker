@@ -1,6 +1,6 @@
 import zoneinfo
 from datetime import datetime, timezone, date
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
 
@@ -66,6 +66,56 @@ async def get_effective_route_and_bus_for_student(
     r_bus = route_res.scalars().first()
     perm_bus_id = str(r_bus) if r_bus else None
     return perm_route_id, perm_bus_id
+
+async def get_effective_details_for_student(
+    db: AsyncSession,
+    student_id: str,
+    target_date: date
+) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """
+    Returns (effective_route_id, effective_bus_id, effective_driver_contact_dict) for target_date.
+    """
+    from app.models.driver import Driver
+    from app.models.profile import Profile
+
+    eff_route_id, eff_bus_id = await get_effective_route_and_bus_for_student(db, student_id, target_date)
+    driver: Optional[Driver] = None
+
+    if eff_bus_id:
+        bus_res = await db.execute(select(Bus).where(Bus.id == eff_bus_id))
+        bus = bus_res.scalars().first()
+        if bus and bus.driver_id:
+            d_res = await db.execute(select(Driver).where(Driver.id == bus.driver_id))
+            driver = d_res.scalars().first()
+
+    if not driver and eff_route_id:
+        r_res = await db.execute(select(Route).where(Route.id == eff_route_id))
+        r = r_res.scalars().first()
+        if r and r.driver_id:
+            d_res = await db.execute(select(Driver).where(Driver.id == r.driver_id))
+            driver = d_res.scalars().first()
+
+    eff_driver_contact = None
+    if driver:
+        full_name = None
+        if driver.user_id:
+            try:
+                import uuid as uuid_mod
+                uid_val = uuid_mod.UUID(str(driver.user_id))
+                p_res = await db.execute(select(Profile.full_name).where(Profile.id == uid_val))
+                full_name = p_res.scalars().first()
+            except Exception:
+                full_name = None
+        eff_driver_contact = {
+            "id": str(driver.id),
+            "name": full_name or driver.license_number,
+            "full_name": full_name or driver.license_number,
+            "license_number": driver.license_number,
+            "phone": driver.phone,
+            "status": driver.status,
+        }
+
+    return eff_route_id, eff_bus_id, eff_driver_contact
 
 async def is_student_assigned_to_teacher(
     db: AsyncSession,

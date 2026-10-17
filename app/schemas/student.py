@@ -24,9 +24,22 @@ class StudentUpdate(BaseModel):
     dropoff_stop: Optional[str] = None
     qr_code_id: Optional[str] = None
 
+class DriverContact(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+    full_name: Optional[str] = None
+    license_number: Optional[str] = None
+    phone: Optional[str] = None
+    status: Optional[str] = "active"
+
 class StudentResponse(StudentBase):
     id: str
     qr_code_id: str
+    effective_route_id: Optional[str] = None
+    effective_bus_id: Optional[str] = None
+    effective_driver: Optional[DriverContact] = None
+    effective_driver_contact: Optional[DriverContact] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+

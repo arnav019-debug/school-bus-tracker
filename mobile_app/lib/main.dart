@@ -460,9 +460,13 @@ class _ParentHomeScreenState extends State<ParentHomeScreen> {
       Map<String, dynamic>? bus;
       Map<String, dynamic>? driver;
 
-      if (selectedChild != null && selectedChild['route_id'] != null) {
+      final effectiveRouteId = selectedChild?['effective_route_id']?.toString() ??
+          selectedChild?['route_id']?.toString();
+      final effectiveBusId = selectedChild?['effective_bus_id']?.toString();
+
+      if (effectiveRouteId != null && effectiveRouteId.isNotEmpty) {
         final routeResponse = await http.get(
-          AppConfig.routeById(selectedChild['route_id'].toString()),
+          AppConfig.routeById(effectiveRouteId),
           headers: {
             'Accept': 'application/json',
             'Authorization': 'Bearer ${widget.accessToken}',
@@ -474,9 +478,11 @@ class _ParentHomeScreenState extends State<ParentHomeScreen> {
         }
       }
 
-      if (route != null && route['bus_id'] != null) {
+      final targetBusId = effectiveBusId ?? (route != null && route['bus_id'] != null ? route['bus_id'].toString() : null);
+
+      if (targetBusId != null && targetBusId.isNotEmpty) {
         final busResponse = await http.get(
-          Uri.parse('${AppConfig.apiBaseUrl}/api/v1/buses/${route['bus_id']}'),
+          Uri.parse('${AppConfig.apiBaseUrl}/api/v1/buses/$targetBusId'),
           headers: {
             'Accept': 'application/json',
             'Authorization': 'Bearer ${widget.accessToken}',
@@ -487,7 +493,9 @@ class _ParentHomeScreenState extends State<ParentHomeScreen> {
         }
       }
 
-      if (bus != null && bus['driver_id'] != null) {
+      if (selectedChild != null && selectedChild['effective_driver'] != null) {
+        driver = selectedChild['effective_driver'] as Map<String, dynamic>;
+      } else if (bus != null && bus['driver_id'] != null) {
         final driverResponse = await http.get(
           AppConfig.driverById(bus['driver_id'].toString()),
           headers: {
@@ -4305,15 +4313,42 @@ class DriverModeScreen extends StatefulWidget {
 
 class _DriverModeScreenState extends State<DriverModeScreen> {
   String? _selectedBusId;
+  List<Map<String, dynamic>> _buses = [];
 
   bool get _hasActiveSubscription => context.read<DriverSharingController>().hasActiveSubscription;
 
   @override
   void initState() {
     super.initState();
-    _selectedBusId = widget.buses.isNotEmpty
-        ? widget.buses.first['id']?.toString()
-        : null;
+    if (widget.buses.isNotEmpty) {
+      _buses = List<Map<String, dynamic>>.from(widget.buses);
+      _selectedBusId = _buses.first['id']?.toString();
+    } else {
+      _loadDriverBuses();
+    }
+  }
+
+  Future<void> _loadDriverBuses() async {
+    try {
+      final response = await http.get(
+        AppConfig.busesUri,
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${widget.accessToken}',
+        },
+      );
+      if (!mounted) return;
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final decoded = jsonDecode(response.body) as List<dynamic>;
+        final fetched = decoded.map((e) => e as Map<String, dynamic>).toList();
+        setState(() {
+          _buses = fetched;
+          if (_buses.isNotEmpty) {
+            _selectedBusId = _buses.first['id']?.toString();
+          }
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _startSharing() async {
@@ -4370,7 +4405,7 @@ class _DriverModeScreenState extends State<DriverModeScreen> {
                   labelText: 'Bus',
                   border: OutlineInputBorder(),
                 ),
-                items: widget.buses
+                items: _buses
                     .map(
                       (bus) => DropdownMenuItem<String>(
                         value: bus['id']?.toString(),
