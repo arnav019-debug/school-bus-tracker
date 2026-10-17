@@ -64,6 +64,34 @@ async def run_async_migrations() -> None:
     and associate a connection with the context.
 
     """
+    try:
+        import socket, subprocess, sys
+        if sys.platform == "darwin":
+            out = subprocess.check_output(["ifconfig", "en0"]).decode()
+            candidates = [l.strip().split()[1] for l in out.splitlines() if l.strip().startswith("inet6 240")]
+            working_ipv6 = None
+            for ip in candidates:
+                try:
+                    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                    s.bind((ip, 0))
+                    s.settimeout(2)
+                    s.connect(("2001:4860:4860::8888", 53))
+                    s.close()
+                    working_ipv6 = ip
+                    break
+                except Exception:
+                    pass
+            if working_ipv6:
+                loop = asyncio.get_running_loop()
+                orig = loop.create_connection
+                async def patched(*args, **kwargs):
+                    dest = kwargs.get("host") or (args[1] if len(args) > 1 else "")
+                    if dest and "supabase" in str(dest) and kwargs.get("local_addr") is None:
+                        kwargs["local_addr"] = (working_ipv6, 0)
+                    return await orig(*args, **kwargs)
+                loop.create_connection = patched
+    except Exception:
+        pass
 
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
