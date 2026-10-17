@@ -27,10 +27,12 @@ async def list_students(
     Resolves effective route for today (Asia/Kolkata) so parents track the approved route.
     """
     query = select(Student)
+    if current_user.role == "parent":
+        query = query.where(Student.parent_id == str(current_user.id))
+    elif parent_id:
+        query = query.where(Student.parent_id == parent_id)
     if route_id:
         query = query.where(Student.route_id == route_id)
-    if parent_id:
-        query = query.where(Student.parent_id == parent_id)
     if grade:
         query = query.where(Student.grade == grade)
 
@@ -93,6 +95,11 @@ async def get_student(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student not found"
+        )
+    if current_user.role == "parent" and (not student.parent_id or str(student.parent_id) != str(current_user.id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this student record"
         )
     from app.services.attendance_service import get_effective_route_and_bus_for_student, get_kolkata_today
     eff_route, _ = await get_effective_route_and_bus_for_student(db, str(student.id), get_kolkata_today())
